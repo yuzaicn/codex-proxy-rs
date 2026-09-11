@@ -38,10 +38,10 @@ const selectedCount = computed(() => form.accountIds.length)
 const canSave = computed(() => !loading.value && !saving.value)
 
 function applyConfig(config: DetectionConfig) {
-  const scope = config.account_scope ?? {}
+  const scope = config.account_scope
   form.enabled = Boolean(config.enabled)
-  form.allAccounts = scope.all === true || !Array.isArray(scope.account_ids)
-  form.accountIds = Array.isArray(scope.account_ids) ? [...scope.account_ids] : []
+  form.allAccounts = 'all' in scope
+  form.accountIds = 'account_ids' in scope ? [...scope.account_ids] : []
   form.intervalSecs = Number.isFinite(config.interval_secs) ? String(config.interval_secs) : '3600'
   form.model = config.model ?? ''
 }
@@ -129,7 +129,7 @@ async function save() {
   try {
     const result = await updateDetectionConfig(payload)
     applyConfig(result)
-    settingsStore.applyDetectionConfig(result)
+    settingsStore.setDetectionEnabled(result.enabled)
     toast.success('降智检测配置已保存')
   }
   catch (cause: unknown) {
