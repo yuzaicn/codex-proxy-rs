@@ -40,6 +40,7 @@ use gateway_core::account::{
     ProviderAccountUpdate as CoreProviderAccountUpdate,
     ProviderRefreshQuery as CoreProviderRefreshQuery, QuotaAccessChange, QuotaAccessState,
     QuotaEvidence, QuotaObservation, QuotaObservationTouch, QuotaState, QuotaWriteOutcome,
+    SchedulingSuspensionSource,
 };
 use gateway_core::error::{StoreError as CoreStoreError, StoreErrorKind as CoreStoreErrorKind};
 use gateway_core::routing::{AccountGroupId, ProviderKind};

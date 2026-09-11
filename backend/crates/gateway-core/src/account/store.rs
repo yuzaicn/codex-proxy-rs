@@ -9,7 +9,7 @@ use super::{
     AccountStateChange, CredentialCasOutcome, CredentialCasUpdate, CredentialRevision,
     LoadedCredential, NewProviderAccount, ProviderAccount, ProviderAccountId,
     ProviderAccountUpdate, ProviderRefreshQuery, QuotaAccessChange, QuotaObservation,
-    QuotaObservationTouch, QuotaWriteOutcome,
+    QuotaObservationTouch, QuotaWriteOutcome, SchedulingSuspensionSource,
 };
 
 /// `provider_accounts` 的数据库中立端口。
@@ -83,6 +83,14 @@ pub trait ProviderAccountStore: Send + Sync {
         &self,
         account: &ProviderAccountId,
         enabled: bool,
+    ) -> Result<(), StoreError>;
+
+    /// 写入调度暂停事实：`suspension` 为 `Some` 时暂停并记录来源，
+    /// 为 `None` 时恢复调度并清空来源。
+    async fn set_scheduling_suspended(
+        &self,
+        account: &ProviderAccountId,
+        suspension: Option<SchedulingSuspensionSource>,
     ) -> Result<(), StoreError>;
 
     async fn delete_account(&self, account: &ProviderAccountId) -> Result<(), StoreError>;

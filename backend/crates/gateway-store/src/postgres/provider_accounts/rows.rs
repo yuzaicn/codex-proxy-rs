@@ -118,6 +118,17 @@ pub(crate) fn parse_error_reason(value: Option<String>) -> StoreResult<Option<Ac
         .transpose()
 }
 
+pub(crate) fn parse_scheduling_suspension_source(
+    value: Option<String>,
+) -> StoreResult<Option<SchedulingSuspensionSource>> {
+    value
+        .map(|value| {
+            SchedulingSuspensionSource::parse(&value)
+                .ok_or_else(|| invalid("unknown scheduling_suspended_by value"))
+        })
+        .transpose()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderAccountSummary {
     pub outbound_proxy: Option<gateway_core::account::OutboundProxy>,
@@ -134,6 +145,8 @@ pub struct ProviderAccountSummary {
     pub access_token_expires_at: Option<DateTime<Utc>>,
     pub next_refresh_at: Option<DateTime<Utc>>,
     pub enabled: bool,
+    pub scheduling_suspended: bool,
+    pub scheduling_suspended_by: Option<SchedulingSuspensionSource>,
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,
     pub credential_state: CredentialState,
@@ -182,6 +195,8 @@ pub struct NewProviderAccount {
     pub access_token_expires_at: Option<DateTime<Utc>>,
     pub next_refresh_at: Option<DateTime<Utc>>,
     pub enabled: bool,
+    pub scheduling_suspended: bool,
+    pub scheduling_suspended_by: Option<SchedulingSuspensionSource>,
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,
     pub credential_state: CredentialState,
@@ -382,7 +397,8 @@ impl ProviderAccountStateUpdate {
 
 pub(crate) const ACCOUNT_SELECT: &str = "select outbound_proxy_url, id, provider_kind, name, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
+            scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -390,7 +406,8 @@ pub(crate) const ACCOUNT_SELECT: &str = "select outbound_proxy_url, id, provider
 
 pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select outbound_proxy_url, id, provider_kind, name, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
+            scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -400,7 +417,8 @@ pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select outbound_proxy_url, id, p
 
 pub(crate) const REFRESH_CANDIDATES_SELECT: &str = "select outbound_proxy_url, id, provider_kind, name, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
+            scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -473,6 +491,10 @@ pub(crate) fn core_account_from_summary(
         summary.last_error_message,
     )
     .with_scheduling(summary.concurrency_limit, summary.weight)
+    .with_scheduling_suspension(
+        summary.scheduling_suspended,
+        summary.scheduling_suspended_by,
+    )
     .with_outbound_proxy(summary.outbound_proxy)
     .with_refresh_schedule(
         summary.has_refresh_token,
@@ -551,6 +573,11 @@ pub(crate) fn account_summary_from_row(
         access_token_expires_at: get(&row, "access_token_expires_at")?,
         next_refresh_at: get(&row, "next_refresh_at")?,
         enabled: get(&row, "enabled")?,
+        scheduling_suspended: get(&row, "scheduling_suspended")?,
+        scheduling_suspended_by: parse_scheduling_suspension_source(get(
+            &row,
+            "scheduling_suspended_by",
+        )?)?,
         concurrency_limit,
         weight,
         credential_state: parse_credential_state(&credential_state)?,

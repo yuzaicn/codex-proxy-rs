@@ -14,7 +14,7 @@ use gateway_core::account::{
     CredentialRevision, CredentialState, LoadedCredential, NewProviderAccount, OpaqueProviderData,
     ProviderAccount, ProviderAccountId, ProviderAccountStore, ProviderAccountUpdate,
     ProviderRefreshQuery, QuotaAccessChange, QuotaObservation, QuotaObservationTouch, QuotaState,
-    QuotaWriteOutcome,
+    QuotaWriteOutcome, SchedulingSuspensionSource,
 };
 use gateway_core::error::{StoreError, StoreErrorKind};
 use gateway_core::policy::ClientApiKeyId;
@@ -452,6 +452,22 @@ impl ProviderAccountStore for MemoryAccountStore {
         Ok(())
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        account: &ProviderAccountId,
+        suspension: Option<SchedulingSuspensionSource>,
+    ) -> Result<(), StoreError> {
+        let mut accounts = self.accounts.lock().expect("account store lock");
+        let stored = accounts
+            .get_mut(account)
+            .ok_or_else(|| store_error(StoreErrorKind::InvalidData))?;
+        stored.account = stored
+            .account
+            .clone()
+            .with_scheduling_suspension(suspension.is_some(), suspension);
+        Ok(())
+    }
+
     async fn delete_account(&self, account: &ProviderAccountId) -> Result<(), StoreError> {
         self.accounts
             .lock()
@@ -531,6 +547,10 @@ fn rebuild_account(current: &ProviderAccount, rebuild: AccountRebuild) -> Provid
         rebuild.last_error_message,
     )
     .with_scheduling(current.concurrency_limit(), current.weight())
+    .with_scheduling_suspension(
+        current.scheduling_suspended(),
+        current.scheduling_suspended_by(),
+    )
     .with_refresh_schedule(rebuild.has_refresh_token, rebuild.next_refresh_at)
 }
 

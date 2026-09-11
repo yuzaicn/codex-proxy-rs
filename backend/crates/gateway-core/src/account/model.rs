@@ -583,6 +583,32 @@ impl AccountErrorReason {
     }
 }
 
+/// `provider_accounts.scheduling_suspended_by` 的稳定来源值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SchedulingSuspensionSource {
+    Manual,
+    Detection,
+}
+
+impl SchedulingSuspensionSource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Detection => "detection",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "detection" => Some(Self::Detection),
+            _ => None,
+        }
+    }
+}
+
 /// 唯一状态解析器的完整输入事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountStatusFacts {
@@ -667,6 +693,8 @@ pub struct ProviderAccount {
     authentication_kind: String,
     revision: CredentialRevision,
     enabled: bool,
+    scheduling_suspended: bool,
+    scheduling_suspended_by: Option<SchedulingSuspensionSource>,
     concurrency_limit: Option<AccountConcurrencyLimit>,
     weight: AccountWeight,
     credential_state: CredentialState,
@@ -702,6 +730,8 @@ impl ProviderAccount {
             authentication_kind,
             revision,
             enabled: true,
+            scheduling_suspended: false,
+            scheduling_suspended_by: None,
             concurrency_limit: None,
             weight: AccountWeight::DEFAULT,
             credential_state: CredentialState::Unknown,
@@ -768,6 +798,18 @@ impl ProviderAccount {
     ) -> Self {
         self.concurrency_limit = concurrency_limit;
         self.weight = weight;
+        self
+    }
+
+    /// 设置调度暂停事实；`suspended_by` 只在暂停生效时有意义。
+    #[must_use]
+    pub const fn with_scheduling_suspension(
+        mut self,
+        suspended: bool,
+        suspended_by: Option<SchedulingSuspensionSource>,
+    ) -> Self {
+        self.scheduling_suspended = suspended;
+        self.scheduling_suspended_by = suspended_by;
         self
     }
 
@@ -854,6 +896,18 @@ impl ProviderAccount {
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// 账号是否被暂停调度；与人工 `enabled` 正交。
+    #[must_use]
+    pub const fn scheduling_suspended(&self) -> bool {
+        self.scheduling_suspended
+    }
+
+    /// 最近一次暂停调度的来源；未暂停时为 `None`。
+    #[must_use]
+    pub const fn scheduling_suspended_by(&self) -> Option<SchedulingSuspensionSource> {
+        self.scheduling_suspended_by
     }
 
     #[must_use]

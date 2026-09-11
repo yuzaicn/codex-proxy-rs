@@ -21,6 +21,12 @@ pub trait ProviderAccountRepository: Send + Sync {
         update: ProviderAccountStateUpdate,
     ) -> StoreResult<bool>;
     async fn set_provider_account_enabled(&self, id: &str, enabled: bool) -> StoreResult<bool>;
+    /// `suspended_by` 为 `Some` 时暂停调度并记录来源，为 `None` 时恢复调度并清空来源。
+    async fn set_provider_account_scheduling_suspended(
+        &self,
+        id: &str,
+        suspended_by: Option<&str>,
+    ) -> StoreResult<bool>;
     async fn compare_and_swap_provider_quota(
         &self,
         account_id: &str,
@@ -110,7 +116,8 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         let rows = sqlx::query(
             "select outbound_proxy_url, id, provider_kind, name, email, upstream_user_id,
                     upstream_account_id, plan_type, authentication_kind, credential_revision, has_refresh_token,
-                    access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, credential_state,
+                    access_token_expires_at, next_refresh_at, enabled,
+                    scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
                     credential_observed_at, quota_access_state, quota_evidence,
                     quota_access_observed_at, quota_reset_at,
                     quota_observed_at, last_error_reason, last_error_message, created_at, updated_at
@@ -151,10 +158,12 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
                outbound_proxy_url, outbound_proxy_id, id, provider_kind, name, email, upstream_user_id,
                upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
                has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
+               scheduling_suspended, scheduling_suspended_by,
                concurrency_limit, weight, credential_state, provider_quota_json,
                credential_observed_at, quota_access_observed_at, quota_observed_at, created_at, updated_at
              ) values (
                $18, $19, $1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13,
+               $20, $21,
                $14, $15, $16, null, $17, null, null, now(), greatest(now(), $17)
              )",
         )
@@ -177,6 +186,12 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .bind(account.credential_observed_at)
         .bind(account.outbound_proxy.as_ref().map(|proxy| proxy.expose_url()))
         .bind(proxy_id)
+        .bind(account.scheduling_suspended)
+        .bind(
+            account
+                .scheduling_suspended_by
+                .map(SchedulingSuspensionSource::as_str),
+        )
         .execute(&mut *transaction)
         .await
         .map_err(|_| postgres_unavailable("insert provider account"))?;
@@ -295,6 +310,26 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         .execute(&self.pool)
         .await
         .map_err(|_| postgres_unavailable("set provider account enabled state"))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn set_provider_account_scheduling_suspended(
+        &self,
+        id: &str,
+        suspended_by: Option<&str>,
+    ) -> StoreResult<bool> {
+        require_nonempty(ENTITY, "id", id)?;
+        let result = sqlx::query(
+            "update provider_accounts
+             set scheduling_suspended = $2, scheduling_suspended_by = $3, updated_at = now()
+             where id = $1",
+        )
+        .bind(id)
+        .bind(suspended_by.is_some())
+        .bind(suspended_by)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| postgres_unavailable("set provider account scheduling suspension"))?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -748,10 +783,12 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            outbound_proxy_url, outbound_proxy_id, id, provider_kind, name, email, upstream_user_id,
            upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
            has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
+           scheduling_suspended, scheduling_suspended_by,
            concurrency_limit, weight, credential_state, provider_quota_json,
            credential_observed_at, quota_access_observed_at, quota_observed_at, created_at, updated_at
          ) values (
            $18, $19, $1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13,
+           $20, $21,
            $14, $15, $16, null, $17, null, null, now(), greatest(now(), $17)
          )
          on conflict (
@@ -771,6 +808,8 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            access_token_expires_at = excluded.access_token_expires_at,
            next_refresh_at = excluded.next_refresh_at,
            enabled = excluded.enabled,
+           scheduling_suspended = excluded.scheduling_suspended,
+           scheduling_suspended_by = excluded.scheduling_suspended_by,
            credential_state = excluded.credential_state,
            provider_quota_json = null,
            quota_access_state = 'unknown',
@@ -803,6 +842,12 @@ pub(crate) async fn upsert_provider_account_in_transaction(
     .bind(account.credential_observed_at)
     .bind(account.outbound_proxy.as_ref().map(|proxy| proxy.expose_url()))
     .bind(proxy_id)
+    .bind(account.scheduling_suspended)
+    .bind(
+        account
+            .scheduling_suspended_by
+            .map(SchedulingSuspensionSource::as_str),
+    )
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|error| {

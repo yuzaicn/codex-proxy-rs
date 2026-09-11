@@ -13,6 +13,7 @@ use gateway_core::account::{
     CredentialState, LoadedCredential, NewProviderAccount, PlaintextCredential, ProviderAccount,
     ProviderAccountId, ProviderAccountStore, ProviderAccountUpdate, ProviderRefreshQuery,
     QuotaAccessChange, QuotaObservation, QuotaObservationTouch, QuotaState, QuotaWriteOutcome,
+    SchedulingSuspensionSource,
 };
 use gateway_core::error::{StoreError, StoreErrorKind};
 use gateway_core::provider_ports::{
@@ -550,6 +551,20 @@ impl ProviderAccountStore for MemoryProviderAccountStore {
         Ok(())
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        account: &ProviderAccountId,
+        suspension: Option<SchedulingSuspensionSource>,
+    ) -> Result<(), StoreError> {
+        let mut accounts = lock(&self.accounts);
+        let stored = accounts.get_mut(account).ok_or_else(invalid)?;
+        stored.account = stored
+            .account
+            .clone()
+            .with_scheduling_suspension(suspension.is_some(), suspension);
+        Ok(())
+    }
+
     async fn delete_account(&self, account: &ProviderAccountId) -> Result<(), StoreError> {
         lock(&self.accounts).remove(account).ok_or_else(invalid)?;
         Ok(())
@@ -618,6 +633,10 @@ fn rebuild_account(previous: &ProviderAccount, replacement: AccountReplacement) 
         replacement.last_error_message,
     )
     .with_scheduling(previous.concurrency_limit(), previous.weight())
+    .with_scheduling_suspension(
+        previous.scheduling_suspended(),
+        previous.scheduling_suspended_by(),
+    )
     .with_refresh_schedule(replacement.has_refresh_token, replacement.next_refresh_at)
 }
 

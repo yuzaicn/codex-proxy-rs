@@ -419,6 +419,7 @@ impl AccountEligibilityPolicy {
 pub enum AccountSchedulingBlocker {
     OutsideClientScope,
     LocalAvailability,
+    SuspendedByDetection,
     Excluded,
     ConcurrencyLimit,
     RequestInterval,
@@ -473,6 +474,7 @@ impl AccountSelector {
                     Some(
                         AccountSchedulingBlocker::OutsideClientScope
                             | AccountSchedulingBlocker::LocalAvailability
+                            | AccountSchedulingBlocker::SuspendedByDetection
                             | AccountSchedulingBlocker::Excluded
                     )
                 )
@@ -609,6 +611,9 @@ impl AccountSelector {
                 .status;
             if status != AccountStatus::Normal {
                 return Some(AccountSchedulingBlocker::LocalAvailability);
+            }
+            if candidate.account.scheduling_suspended() {
+                return Some(AccountSchedulingBlocker::SuspendedByDetection);
             }
         }
         if context.excluded_accounts.contains(candidate.account.id()) {

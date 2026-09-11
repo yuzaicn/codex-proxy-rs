@@ -215,6 +215,7 @@ impl AffinitySelection {
             }
             PreferredAccountSelection::Blocked(
                 AccountSchedulingBlocker::LocalAvailability
+                | AccountSchedulingBlocker::SuspendedByDetection
                 | AccountSchedulingBlocker::Excluded
                 | AccountSchedulingBlocker::OutsideClientScope,
             )

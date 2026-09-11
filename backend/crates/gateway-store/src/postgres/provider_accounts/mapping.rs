@@ -57,6 +57,8 @@ pub(crate) fn prepared_account(
         access_token_expires_at: credential.access_token_expires_at,
         next_refresh_at: credential.next_refresh_at,
         enabled: credential.enabled,
+        scheduling_suspended: false,
+        scheduling_suspended_by: None,
         concurrency_limit: None,
         weight: AccountWeight::DEFAULT,
         credential_state: credential.credential_state,

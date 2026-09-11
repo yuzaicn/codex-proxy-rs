@@ -41,6 +41,8 @@ impl ProviderAccountStore for PgProviderAccountRepository {
                 .map(DateTime::<Utc>::from),
             next_refresh_at: account.account.next_refresh_at().map(DateTime::<Utc>::from),
             enabled: account.account.enabled(),
+            scheduling_suspended: account.account.scheduling_suspended(),
+            scheduling_suspended_by: account.account.scheduling_suspended_by(),
             concurrency_limit: account.account.concurrency_limit(),
             weight: account.account.weight(),
             credential_state: account.account.credential_state(),
@@ -408,6 +410,21 @@ impl ProviderAccountStore for PgProviderAccountRepository {
     ) -> Result<(), CoreStoreError> {
         let updated = self
             .set_provider_account_enabled(account.as_str(), enabled)
+            .await
+            .map_err(core_store_error)?;
+        require_core_update(updated)
+    }
+
+    async fn set_scheduling_suspended(
+        &self,
+        account: &CoreProviderAccountId,
+        suspension: Option<SchedulingSuspensionSource>,
+    ) -> Result<(), CoreStoreError> {
+        let updated = self
+            .set_provider_account_scheduling_suspended(
+                account.as_str(),
+                suspension.map(SchedulingSuspensionSource::as_str),
+            )
             .await
             .map_err(core_store_error)?;
         require_core_update(updated)

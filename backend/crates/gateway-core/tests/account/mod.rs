@@ -16,6 +16,7 @@ use gateway_core::account::{
     CredentialCasUpdate, CredentialRevision, CredentialState, OpaqueProviderData,
     PlaintextCredential, PreferredAccountSelection, ProviderAccount, ProviderAccountId,
     ProviderAccountIdentity, ProviderAccountUpdate, QuotaEvidence, QuotaState, RotationStrategy,
+    SchedulingSuspensionSource,
 };
 use gateway_core::routing::{
     ClientRoutingScope, FrozenAccountScope, ProviderKind, RuntimeAccount, RuntimeAccountDirectory,
@@ -244,6 +245,19 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
             first_output_latency_ms: None,
         },
     };
+    let suspended = AccountCandidate {
+        account: account("acct_suspended")
+            .with_scheduling_suspension(true, Some(SchedulingSuspensionSource::Detection)),
+        signals: AccountRuntimeSignals {
+            in_flight: 0,
+            last_started_at: None,
+            quota_reset_at: None,
+            quota_remaining_rank: None,
+            rate_limited_until: None,
+            failure_rate_basis_points: None,
+            first_output_latency_ms: None,
+        },
+    };
     let mut context = context(RotationStrategy::Sticky);
     context.eligibility = AccountEligibilityPolicy::BypassForDiagnostic;
 
@@ -258,6 +272,13 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
             .select(std::slice::from_ref(&disabled), &context)
             .map(|selection| selection.candidate().account.id()),
         Some(disabled.account.id())
+    );
+    // 检测暂停也是本地投影：诊断/复检探测必须仍能命中被暂停的账号。
+    assert_eq!(
+        AccountSelector
+            .select(std::slice::from_ref(&suspended), &context)
+            .map(|selection| selection.candidate().account.id()),
+        Some(suspended.account.id())
     );
 }
 
@@ -456,6 +477,7 @@ fn highest_priority_affinity_should_still_obey_existing_scheduling_constraints()
         AccountSchedulingBlocker::ConcurrencyLimit,
         AccountSchedulingBlocker::RequestInterval,
         AccountSchedulingBlocker::LocalAvailability,
+        AccountSchedulingBlocker::SuspendedByDetection,
     ] {
         let mut candidates = [
             weighted_candidate("acct_preferred", 1, 0),
@@ -482,6 +504,12 @@ fn highest_priority_affinity_should_still_obey_existing_scheduling_constraints()
             AccountSchedulingBlocker::LocalAvailability => {
                 candidates[0].signals.rate_limited_until =
                     Some(selection.now + Duration::from_secs(60))
+            }
+            AccountSchedulingBlocker::SuspendedByDetection => {
+                candidates[0].account = candidates[0]
+                    .account
+                    .clone()
+                    .with_scheduling_suspension(true, Some(SchedulingSuspensionSource::Detection));
             }
             _ => unreachable!("test cases"),
         }
