@@ -98,7 +98,7 @@ async function toggleScheduling(round: DetectionRound, record: DetectionRecord) 
   const suspended = !record.scheduling_suspended
   actionBusyKey.value = `${round.detection_round_id}:${record.id}`
   try {
-    await setSchedulingSuspended({ account_id: record.account_id, suspended })
+    await setSchedulingSuspended({ accountId: record.account_id, suspended })
     await loadRoundRecords(round, true)
   }
   catch (error) {

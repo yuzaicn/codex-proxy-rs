@@ -12,9 +12,11 @@ import BasePageHeader from '@/components/base/BasePageHeader.vue'
 import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
 import BaseTable from '@/components/base/BaseTable/index.vue'
+import { toast } from '@/components/base/BaseToast'
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
+import { errorMessage } from '@/utils/async'
 import AccountBatchEditModal from './components/AccountBatchEditModal.vue'
 import AccountConnectionTestModal from './components/AccountConnectionTestModal.vue'
 import AccountCreateModal from './components/AccountCreateModal/index.vue'
@@ -36,19 +38,6 @@ import { useAccountsQuery } from './composables/useAccountsQuery'
 import { useAccountsTable } from './composables/useAccountsTable'
 import { accountColumns, derivedAccountStatus } from './constants'
 
-const schedulingSuspendedUpdating = reactive<Record<string, boolean>>({})
-
-async function toggleScheduling(row: AccountRow, suspended: boolean) {
-  schedulingSuspendedUpdating[row.id] = true
-  try {
-    await setSchedulingSuspended({ account_id: row.id, suspended })
-    row.schedulingSuspended = suspended
-  }
-  finally {
-    schedulingSuspendedUpdating[row.id] = false
-  }
-}
-
 const selectedIds = ref<Set<string>>(new Set())
 const {
   loading,
@@ -67,6 +56,22 @@ const {
   handlePageSizeChange,
   handleSortChange,
 } = useAccountsQuery()
+
+const schedulingSuspendedUpdating = reactive<Record<string, boolean>>({})
+
+async function toggleScheduling(row: AccountRow, suspended: boolean) {
+  schedulingSuspendedUpdating[row.id] = true
+  try {
+    await setSchedulingSuspended({ accountId: row.id, suspended })
+    replaceAccount({ ...row, schedulingSuspended: suspended })
+  }
+  catch (error) {
+    toast.error(errorMessage(error, suspended ? '暂停调度失败' : '恢复调度失败'))
+  }
+  finally {
+    schedulingSuspendedUpdating[row.id] = false
+  }
+}
 
 const {
   groups,
