@@ -24,8 +24,9 @@ mod use_case;
 pub use use_case::{
     account_groups::AccountGroupService, accounts::AccountsService, auth::AuthService,
     backup::BackupService, client_distribution::ClientDistributionService,
-    client_keys::ClientKeyService, observability::ObservabilityService, openai::OpenAiService,
-    proxies::ProxiesService, settings::SettingsService, system::SystemService, xai::XaiService,
+    client_keys::ClientKeyService, detection::DetectionService,
+    observability::ObservabilityService, openai::OpenAiService, proxies::ProxiesService,
+    settings::SettingsService, system::SystemService, xai::XaiService,
 };
 
 use model::{AdminError, AdminErrorKind};
@@ -39,8 +40,9 @@ use use_case::{
     account_groups::DefaultAccountGroupService, accounts::DefaultAccountsService,
     auth::DefaultAuthService, backup::DefaultBackupService,
     client_distribution::DefaultClientDistributionService, client_keys::DefaultClientKeyService,
-    observability::DefaultObservabilityService, openai::DefaultOpenAiService,
-    settings::DefaultSettingsService, system::DefaultSystemService, xai::DefaultXaiService,
+    detection::DefaultDetectionService, observability::DefaultObservabilityService,
+    openai::DefaultOpenAiService, settings::DefaultSettingsService, system::DefaultSystemService,
+    xai::DefaultXaiService,
 };
 
 const OPENAI_PROVIDER_KIND: &str = "openai";
@@ -157,6 +159,7 @@ pub struct AdminServices {
     client_distribution: Arc<dyn ClientDistributionService>,
     observability: Arc<dyn ObservabilityService>,
     settings: Arc<dyn SettingsService>,
+    detection: Arc<dyn DetectionService>,
     system: Arc<dyn SystemService>,
     openai: Arc<dyn OpenAiService>,
     xai: Arc<dyn XaiService>,
@@ -202,6 +205,11 @@ impl AdminServices {
     #[must_use]
     pub fn settings(&self) -> &dyn SettingsService {
         self.settings.as_ref()
+    }
+
+    #[must_use]
+    pub fn detection(&self) -> &dyn DetectionService {
+        self.detection.as_ref()
     }
 
     #[must_use]
@@ -319,11 +327,16 @@ pub async fn initialize(
             store.observability(),
             store.accounts(),
             store.settings(),
-            registry,
+            registry.clone(),
         )),
         settings: Arc::new(DefaultSettingsService::new(
             store.settings(),
             snapshot.clone(),
+        )),
+        detection: Arc::new(DefaultDetectionService::new(
+            store.detection(),
+            snapshot.clone(),
+            registry,
         )),
         system: Arc::new(DefaultSystemService::new(system)),
         openai: Arc::new(DefaultOpenAiService::new(

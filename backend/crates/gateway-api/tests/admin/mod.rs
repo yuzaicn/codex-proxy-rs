@@ -59,7 +59,7 @@ use gateway_admin::{
         store::{
             AccountGroupStore, AccountRuntimeStore, AccountStore, AdminAccountStorePorts,
             AdminStoreError, AdminStoreErrorKind, AdminStorePorts, AdminStoreResult, AuthStore,
-            ClientKeyStore, ObservabilityStore, SettingsStore,
+            ClientKeyStore, DetectionStore, ObservabilityStore, SettingsStore,
         },
         system::{
             SystemOperationError, SystemOperationErrorKind, SystemOperations,
@@ -133,8 +133,9 @@ impl AdminTestFixture {
             ),
             auth.clone(),
             client_keys.clone(),
-            unused,
+            unused.clone(),
             settings.clone(),
+            unused,
             gateway_admin::ports::backup::BackupStorePorts::disabled(),
         );
         let providers: Vec<Arc<dyn ProviderAdmin>> = vec![
@@ -810,6 +811,15 @@ impl AccountStore for UnusedStore {
         Err(unavailable("account recovery"))
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        _: &ProviderAccountId,
+        _: Option<gateway_core::account::SchedulingSuspensionSource>,
+        _: &MutationContext,
+    ) -> AdminStoreResult<AccountUpdateResult> {
+        Err(unavailable("account scheduling suspension"))
+    }
+
     async fn batch_update_accounts(
         &self,
         _: BatchUpdateAccounts,
@@ -832,6 +842,37 @@ impl AccountStore for UnusedStore {
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         Err(unavailable("credential export audit"))
+    }
+}
+
+#[async_trait]
+impl DetectionStore for UnusedStore {
+    async fn load_detection_config(
+        &self,
+    ) -> AdminStoreResult<Option<gateway_admin::model::detection::DetectionConfig>> {
+        Err(unavailable("detection config"))
+    }
+
+    async fn replace_detection_config(
+        &self,
+        _: gateway_admin::model::detection::ReplaceDetectionConfig,
+        _: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::detection::DetectionConfigMutation> {
+        Err(unavailable("detection config"))
+    }
+
+    async fn list_detection_records(
+        &self,
+        _: gateway_admin::model::detection::DetectionRecordQuery,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionRecord>> {
+        Err(unavailable("detection records"))
+    }
+
+    async fn list_detection_rounds(
+        &self,
+        _: u32,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionRound>> {
+        Err(unavailable("detection rounds"))
     }
 }
 

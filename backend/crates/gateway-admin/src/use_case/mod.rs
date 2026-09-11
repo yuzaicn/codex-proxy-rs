@@ -6,6 +6,7 @@ pub mod auth;
 pub mod backup;
 pub mod client_distribution;
 pub mod client_keys;
+pub mod detection;
 pub mod observability;
 pub mod openai;
 pub mod proxies;

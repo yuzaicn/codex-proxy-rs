@@ -25,6 +25,10 @@ use crate::model::{
         ClientKeyListQuery, ClientKeyPage, ClientKeyRecord, ClientKeySecret, DeleteClientKey,
         NewClientKey, SetClientKeyEnabled, UpdateClientKey,
     },
+    detection::{
+        DetectionConfig, DetectionConfigMutation, DetectionRecord, DetectionRecordQuery,
+        DetectionRound, ReplaceDetectionConfig,
+    },
     observability::{
         DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
         OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange, UsageCalculatedBillingFact,
@@ -161,6 +165,15 @@ pub trait AccountStore: Send + Sync {
     async fn recover_account(
         &self,
         account_id: &gateway_core::account::ProviderAccountId,
+        context: &MutationContext,
+    ) -> AdminStoreResult<AccountUpdateResult>;
+
+    /// 写入调度暂停事实并记录审计：`suspension` 为 `Some` 时暂停并记录来源，
+    /// 为 `None` 时恢复调度并清空来源。管理侧仅此一个写入口。
+    async fn set_scheduling_suspended(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+        suspension: Option<gateway_core::account::SchedulingSuspensionSource>,
         context: &MutationContext,
     ) -> AdminStoreResult<AccountUpdateResult>;
 
@@ -351,6 +364,28 @@ pub trait ObservabilityStore: Send + Sync {
     async fn list_ops_errors(&self, query: OpsErrorQuery) -> AdminStoreResult<OpsErrorPage>;
 }
 
+/// 降智检测配置与检测记录读写。
+#[async_trait]
+pub trait DetectionStore: Send + Sync {
+    /// 读取全局检测配置；配置行尚未写入时返回 `None`。
+    async fn load_detection_config(&self) -> AdminStoreResult<Option<DetectionConfig>>;
+
+    async fn replace_detection_config(
+        &self,
+        command: ReplaceDetectionConfig,
+        context: &MutationContext,
+    ) -> AdminStoreResult<DetectionConfigMutation>;
+
+    /// 分页读取检测记录（含账号身份投影），按检测时间倒排。
+    async fn list_detection_records(
+        &self,
+        query: DetectionRecordQuery,
+    ) -> AdminStoreResult<Vec<DetectionRecord>>;
+
+    /// 读取最近的检测批次聚合，按检测时间倒排。
+    async fn list_detection_rounds(&self, limit: u32) -> AdminStoreResult<Vec<DetectionRound>>;
+}
+
 /// Runtime settings 与管理员 API Key 写入。
 #[async_trait]
 pub trait SettingsStore: Send + Sync {
@@ -412,6 +447,7 @@ pub struct AdminStorePorts {
     client_keys: Arc<dyn ClientKeyStore>,
     observability: Arc<dyn ObservabilityStore>,
     settings: Arc<dyn SettingsStore>,
+    detection: Arc<dyn DetectionStore>,
     backup: BackupStorePorts,
 }
 
@@ -423,6 +459,7 @@ impl AdminStorePorts {
         client_keys: Arc<dyn ClientKeyStore>,
         observability: Arc<dyn ObservabilityStore>,
         settings: Arc<dyn SettingsStore>,
+        detection: Arc<dyn DetectionStore>,
         backup: BackupStorePorts,
     ) -> Self {
         Self {
@@ -431,6 +468,7 @@ impl AdminStorePorts {
             client_keys,
             observability,
             settings,
+            detection,
             backup,
         }
     }
@@ -473,6 +511,11 @@ impl AdminStorePorts {
     #[must_use]
     pub fn settings(&self) -> Arc<dyn SettingsStore> {
         self.settings.clone()
+    }
+
+    #[must_use]
+    pub fn detection(&self) -> Arc<dyn DetectionStore> {
+        self.detection.clone()
     }
 
     #[must_use]

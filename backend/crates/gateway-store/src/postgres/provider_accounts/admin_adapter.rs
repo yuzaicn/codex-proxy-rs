@@ -805,6 +805,39 @@ impl AccountStore for PgAdminAccountStore {
         })
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        account_id: &CoreProviderAccountId,
+        suspension: Option<SchedulingSuspensionSource>,
+        context: &MutationContext,
+    ) -> AdminStoreResult<AccountUpdateResult> {
+        let config_revision = self
+            .accounts
+            .set_provider_account_scheduling_suspended_admin(
+                SetProviderAccountSchedulingSuspended {
+                    account_id: account_id.as_str().to_owned(),
+                    suspended_by: suspension.map(SchedulingSuspensionSource::as_str),
+                    audit: mutation_audit(
+                        context,
+                        "set_scheduling_suspended",
+                        "provider_account",
+                        account_id.as_str(),
+                        vec![
+                            "scheduling_suspended".to_owned(),
+                            "scheduling_suspended_by".to_owned(),
+                        ],
+                    ),
+                },
+            )
+            .await
+            .map_err(|error| admin_store_error(ENTITY, error))
+            .and_then(admin_revision)?;
+        Ok(AccountUpdateResult {
+            config_revision,
+            account_id: account_id.clone(),
+        })
+    }
+
     async fn batch_update_accounts(
         &self,
         command: BatchUpdateAccounts,

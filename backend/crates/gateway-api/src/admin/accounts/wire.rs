@@ -258,6 +258,8 @@ pub struct AccountView {
     /// 最近一次失败的上游错误描述；仅错误状态存在。
     pub error_message: Option<String>,
     pub enabled: bool,
+    /// 调度暂停事实；与 `enabled` 正交，由手动开关或检测 Worker 翻转。
+    pub scheduling_suspended: bool,
     pub concurrency_limit: Option<u32>,
     pub weight: u16,
     pub access_token_expires_at: Option<String>,
@@ -495,6 +497,27 @@ impl AccountActionRequest {
     pub(super) fn into_id(self) -> Result<ProviderAccountId, WireValidationError> {
         self.validate()?;
         ProviderAccountId::new(self.account_id).map_err(|_| WireValidationError::new("accountId"))
+    }
+}
+
+/// 手动暂停或恢复账号调度的请求。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetSchedulingSuspendedRequest {
+    pub account_id: String,
+    pub suspended: bool,
+}
+
+impl SetSchedulingSuspendedRequest {
+    pub fn validate(&self) -> Result<(), WireValidationError> {
+        require_account_id(&self.account_id, "accountId")
+    }
+
+    pub(super) fn into_parts(self) -> Result<(ProviderAccountId, bool), WireValidationError> {
+        self.validate()?;
+        let account_id = ProviderAccountId::new(self.account_id)
+            .map_err(|_| WireValidationError::new("accountId"))?;
+        Ok((account_id, self.suspended))
     }
 }
 

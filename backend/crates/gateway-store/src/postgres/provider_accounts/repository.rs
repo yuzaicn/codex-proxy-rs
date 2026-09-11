@@ -78,6 +78,12 @@ pub trait ProviderAccountAdminRepository: Send + Sync {
         command: RecoverProviderAccount,
     ) -> StoreResult<Revision>;
 
+    /// 管理侧调度暂停写入，与其他账号管理动作走同一审计与 revision 事务。
+    async fn set_provider_account_scheduling_suspended_admin(
+        &self,
+        command: SetProviderAccountSchedulingSuspended,
+    ) -> StoreResult<Revision>;
+
     async fn delete_provider_accounts_admin(
         &self,
         command: DeleteProviderAccounts,
@@ -683,6 +689,48 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         finish_admin_transaction(transaction, result, "provider account admin recovery")
             .await
             .map(|(revision, _)| revision)
+    }
+
+    async fn set_provider_account_scheduling_suspended_admin(
+        &self,
+        command: SetProviderAccountSchedulingSuspended,
+    ) -> StoreResult<Revision> {
+        validate_admin_account_ids(std::slice::from_ref(&command.account_id))?;
+        let mut transaction =
+            self.pool.begin().await.map_err(|_| {
+                postgres_unavailable("begin provider account scheduling suspension")
+            })?;
+        let result = async {
+            let revision = bump_config_revision_in_transaction(&mut transaction).await?;
+            sqlx::query_scalar::<_, String>(
+                "update provider_accounts
+                 set scheduling_suspended = $2,
+                     scheduling_suspended_by = $3,
+                     updated_at = now()
+                 where id = $1
+                 returning id",
+            )
+            .bind(&command.account_id)
+            .bind(command.suspended_by.is_some())
+            .bind(command.suspended_by)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| postgres_unavailable("set provider account scheduling suspension"))?
+            .ok_or_else(|| StoreError::NotFound {
+                entity: ENTITY,
+                id: command.account_id.clone(),
+            })?;
+            append_admin_audit_event_in_transaction(&mut transaction, command.audit, revision)
+                .await?;
+            Ok(revision)
+        }
+        .await;
+        finish_admin_transaction(
+            transaction,
+            result,
+            "provider account scheduling suspension",
+        )
+        .await
     }
 
     async fn delete_provider_accounts_admin(

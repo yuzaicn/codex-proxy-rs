@@ -15,6 +15,10 @@ where
         .route("/api/admin/accounts/refresh", post(refresh_account::<S>))
         .route("/api/admin/accounts/recover", post(recover_account::<S>))
         .route("/api/admin/accounts/rotate", post(rotate_account::<S>))
+        .route(
+            "/api/admin/accounts/set-scheduling-suspended",
+            post(set_account_scheduling_suspended::<S>),
+        )
         .route("/api/admin/accounts/update", post(update_account::<S>))
         .route("/api/admin/accounts/delete", post(delete_accounts::<S>))
         .route(
@@ -341,6 +345,27 @@ where
         .map_err(map_service_error)?;
     let data = account_refresh_data(result, Utc::now());
     Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(data)))
+}
+
+async fn set_account_scheduling_suspended<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<SetSchedulingSuspendedRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: AdminSessionState + Send + Sync,
+{
+    let (account_id, suspended) = request.into_parts().map_err(map_wire_error)?;
+    let result = state
+        .admin_services()
+        .accounts()
+        .set_scheduling_suspended(&auth.context().mutation_context(), account_id, suspended)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(UpdatedAccountData::from(result)),
+    ))
 }
 
 async fn account_quota<S>(

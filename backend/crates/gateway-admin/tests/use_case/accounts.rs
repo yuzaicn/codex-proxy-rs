@@ -788,6 +788,28 @@ impl AccountStore for FakeAccountStore {
         })
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        account_id: &ProviderAccountId,
+        suspension: Option<gateway_core::account::SchedulingSuspensionSource>,
+        context: &MutationContext,
+    ) -> AdminStoreResult<AccountUpdateResult> {
+        self.record("store.set_scheduling_suspended");
+        self.record_context(context);
+        self.require_commit()?;
+        let mut accounts = self.accounts.lock().expect("accounts");
+        if let Some(account) = accounts
+            .iter_mut()
+            .find(|account| account.id == account_id.as_str())
+        {
+            account.scheduling_suspended = suspension.is_some();
+        }
+        Ok(AccountUpdateResult {
+            config_revision: revision(2),
+            account_id: account_id.clone(),
+        })
+    }
+
     async fn batch_update_accounts(
         &self,
         command: BatchUpdateAccounts,
@@ -2077,6 +2099,7 @@ pub(super) fn account_record(kind: &str) -> AccountRecord {
         access_token_expires_at: Some(now + TimeDelta::hours(1)),
         next_refresh_at: Some(now + TimeDelta::minutes(30)),
         enabled: true,
+        scheduling_suspended: false,
         concurrency_limit: None,
         weight: gateway_core::account::AccountWeight::DEFAULT,
         credential_state: CredentialState::Ready,

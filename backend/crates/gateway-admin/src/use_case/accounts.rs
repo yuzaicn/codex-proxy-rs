@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use futures::StreamExt as _;
 use gateway_core::{
-    account::ProviderAccountId,
+    account::{ProviderAccountId, SchedulingSuspensionSource},
     engine::probe::{AccountProbe, AccountProbeRequest},
     routing::{ProviderKind, UpstreamModelId},
     runtime::SnapshotControl,
@@ -69,6 +69,15 @@ pub trait AccountsService: Send + Sync {
         &self,
         context: &MutationContext,
         command: UpdateAccount,
+    ) -> Result<AccountUpdateResult, AdminError>;
+
+    /// 手动暂停或恢复账号调度：`suspended = true` 记录 `manual` 来源，
+    /// `false` 恢复调度并清空来源。
+    async fn set_scheduling_suspended(
+        &self,
+        context: &MutationContext,
+        account_id: ProviderAccountId,
+        suspended: bool,
     ) -> Result<AccountUpdateResult, AdminError>;
 
     async fn batch_update(
@@ -497,6 +506,26 @@ impl AccountsService for DefaultAccountsService {
             config_revision: result.config_revision,
             account,
         })
+    }
+
+    async fn set_scheduling_suspended(
+        &self,
+        context: &MutationContext,
+        account_id: ProviderAccountId,
+        suspended: bool,
+    ) -> Result<AccountUpdateResult, AdminError> {
+        let (_, provider) = self.provider_for_account(&account_id).await?;
+        let suspension = suspended.then_some(SchedulingSuspensionSource::Manual);
+        let result = self
+            .accounts
+            .set_scheduling_suspended(&account_id, suspension, context)
+            .await
+            .map_err(|error| map_store_error(error, "provider account scheduling"))?;
+        provider
+            .account_facts_changed(std::slice::from_ref(&account_id))
+            .await;
+        publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
+        Ok(result)
     }
 
     async fn update(

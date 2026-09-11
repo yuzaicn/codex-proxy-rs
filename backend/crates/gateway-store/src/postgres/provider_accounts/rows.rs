@@ -344,6 +344,15 @@ pub struct RecoverProviderAccount {
     pub audit: AdminAuditEvent,
 }
 
+/// 管理侧调度暂停写入：`suspended_by` 为 `Some` 时暂停并记录来源稳定值，
+/// 为 `None` 时恢复调度并清空来源。
+#[derive(Debug, Clone)]
+pub struct SetProviderAccountSchedulingSuspended {
+    pub account_id: String,
+    pub suspended_by: Option<&'static str>,
+    pub audit: AdminAuditEvent,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeleteProviderAccounts {
     pub scope: ProviderAccountAdminScope,

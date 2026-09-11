@@ -37,6 +37,10 @@ use gateway_admin::{
             ClientKeyListQuery, ClientKeyPage, ClientKeyRecord, ClientKeySecret, DeleteClientKey,
             NewClientKey, SetClientKeyEnabled, UpdateClientKey,
         },
+        detection::{
+            DetectionConfig, DetectionConfigMutation, DetectionRecord, DetectionRecordQuery,
+            DetectionRound, ReplaceDetectionConfig,
+        },
         observability::{
             DashboardDesktopRelease, DashboardObservation, DashboardWireAttribute,
             DashboardWireProfile, DashboardWireTarget, DesktopReleaseStatus, DiagnosticDimension,
@@ -62,7 +66,7 @@ use gateway_admin::{
         store::{
             AccountGroupStore, AccountRuntimeStore, AccountStore, AdminAccountStorePorts,
             AdminStoreError, AdminStoreErrorKind, AdminStorePorts, AdminStoreResult, AuthStore,
-            ClientKeyStore, ObservabilityStore, SettingsStore,
+            ClientKeyStore, DetectionStore, ObservabilityStore, SettingsStore,
         },
         system::{
             SystemOperationError, SystemOperationErrorKind, SystemOperations,
@@ -213,6 +217,7 @@ impl AdminHarness {
                 self.client_keys,
                 self.observability,
                 self.settings,
+                Arc::new(UnavailableStore),
                 self.backup,
             ),
             self.providers,
@@ -444,6 +449,15 @@ impl AccountStore for UnavailableStore {
         Err(unavailable("account recovery"))
     }
 
+    async fn set_scheduling_suspended(
+        &self,
+        _: &ProviderAccountId,
+        _: Option<gateway_core::account::SchedulingSuspensionSource>,
+        _: &MutationContext,
+    ) -> AdminStoreResult<AccountUpdateResult> {
+        Err(unavailable("account scheduling suspension"))
+    }
+
     async fn batch_update_accounts(
         &self,
         _: BatchUpdateAccounts,
@@ -615,6 +629,32 @@ impl SettingsStore for UnavailableStore {
         _: &MutationContext,
     ) -> AdminStoreResult<AdminApiKeyMutation> {
         Err(unavailable("admin API key"))
+    }
+}
+
+#[async_trait]
+impl DetectionStore for UnavailableStore {
+    async fn load_detection_config(&self) -> AdminStoreResult<Option<DetectionConfig>> {
+        Err(unavailable("detection config"))
+    }
+
+    async fn replace_detection_config(
+        &self,
+        _: ReplaceDetectionConfig,
+        _: &MutationContext,
+    ) -> AdminStoreResult<DetectionConfigMutation> {
+        Err(unavailable("detection config"))
+    }
+
+    async fn list_detection_records(
+        &self,
+        _: DetectionRecordQuery,
+    ) -> AdminStoreResult<Vec<DetectionRecord>> {
+        Err(unavailable("detection records"))
+    }
+
+    async fn list_detection_rounds(&self, _: u32) -> AdminStoreResult<Vec<DetectionRound>> {
+        Err(unavailable("detection rounds"))
     }
 }
 
