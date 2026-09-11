@@ -13,6 +13,7 @@ import SettingsBackupSection from './components/backup/SettingsBackupSection.vue
 import ClientVersionSettings from './components/client-version/index.vue'
 import DetectionSettingsCard from './components/DetectionSettingsCard.vue'
 import ModelAliasesCard from './components/ModelAliasesCard.vue'
+import ResetDetectionSettingsSection from './components/reset-detection/index.vue'
 import RotationStrategyCard from './components/RotationStrategyCard.vue'
 import RuntimeSettingsCard from './components/RuntimeSettingsCard.vue'
 import { useAdminApiKey } from './composables/useAdminApiKey'
@@ -22,20 +23,28 @@ import { rotationOptions } from './constants'
 const route = useRoute()
 const router = useRouter()
 const detectionCard = ref<{ load: () => Promise<void> } | null>(null)
+const resetDetectionSection = ref<{ load: () => Promise<void> } | null>(null)
 
-type SettingsSection = 'runtime' | 'backup' | 'detection'
+type SettingsSection = 'runtime' | 'backup' | 'detection' | 'reset-detection'
 
 const section = computed<SettingsSection>(() =>
-  route.name === 'settings-backup' ? 'backup' : route.name === 'settings-detection' ? 'detection' : 'runtime',
+  route.name === 'settings-backup'
+    ? 'backup'
+    : route.name === 'settings-detection'
+      ? 'detection'
+      : route.name === 'settings-reset-detection'
+        ? 'reset-detection'
+        : 'runtime',
 )
 
 function switchSection(value: string): void {
   const paths: Record<SettingsSection, string> = {
-    runtime: '/settings',
-    backup: '/settings/backup',
-    detection: '/settings/detection',
+    'runtime': '/settings',
+    'backup': '/settings/backup',
+    'detection': '/settings/detection',
+    'reset-detection': '/settings/reset-detection',
   }
-  const nextSection: SettingsSection = value === 'backup' || value === 'detection' ? value : 'runtime'
+  const nextSection: SettingsSection = value === 'backup' || value === 'detection' || value === 'reset-detection' ? value : 'runtime'
   void router.push(paths[nextSection])
 }
 
@@ -82,6 +91,9 @@ watch(
     else if (value === 'detection') {
       void detectionCard.value?.load()
     }
+    else if (value === 'reset-detection') {
+      void resetDetectionSection.value?.load()
+    }
   },
   { immediate: true },
 )
@@ -100,6 +112,7 @@ watch(
           { label: '运行设置', value: 'runtime' },
           { label: '备份', value: 'backup' },
           { label: '降智检测', value: 'detection' },
+          { label: '重置检测', value: 'reset-detection' },
         ]"
         @update:model-value="switchSection"
       />
@@ -172,6 +185,10 @@ watch(
 
     <div v-else-if="section === 'detection'" class="mt-5 grid w-full gap-5">
       <DetectionSettingsCard ref="detectionCard" :active="section === 'detection'" />
+    </div>
+
+    <div v-else-if="section === 'reset-detection'" class="mt-5 grid w-full gap-5">
+      <ResetDetectionSettingsSection ref="resetDetectionSection" :active="section === 'reset-detection'" />
     </div>
 
     <div v-else class="mt-5">

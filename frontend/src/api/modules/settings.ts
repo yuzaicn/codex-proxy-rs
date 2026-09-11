@@ -17,6 +17,16 @@ export interface RuntimeSettings {
   updatedAt: string
 }
 
+export type ResetDetectionAccountScope = 'all_non_error' | 'normal' | 'limited'
+
+export interface ResetDetectionSettings {
+  enabled: boolean
+  pollIntervalSecs: number
+  accountScope: ResetDetectionAccountScope
+  autoConsumeEnabled: boolean
+  updatedAt: string
+}
+
 export type ClientArchitecture = 'x64' | 'arm64'
 export type ClientDownloadSource = 'microsoft_store' | 'official_openai'
 
@@ -61,6 +71,23 @@ type UpdateSettingsParam = Omit<RuntimeSettings, 'updatedAt'>
 export function updateSettings(data: UpdateSettingsParam) {
   return request<RuntimeSettings>({
     url: '/api/admin/settings/update',
+    method: 'POST',
+    data,
+  })
+}
+
+type UpdateResetDetectionSettingsParam = Omit<ResetDetectionSettings, 'updatedAt'>
+
+export function getResetDetectionSettings() {
+  return request<ResetDetectionSettings>({
+    url: '/api/admin/settings/reset-detection',
+    method: 'GET',
+  })
+}
+
+export function updateResetDetectionSettings(data: UpdateResetDetectionSettingsParam) {
+  return request<ResetDetectionSettings>({
+    url: '/api/admin/settings/reset-detection/update',
     method: 'POST',
     data,
   })

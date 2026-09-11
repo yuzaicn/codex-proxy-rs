@@ -65,6 +65,11 @@ export const routes: RouteRecordRaw[] = [
         name: 'settings-detection',
         component: () => import('@/views/settings/index.vue'),
       },
+      {
+        path: 'settings/reset-detection',
+        name: 'settings-reset-detection',
+        component: () => import('@/views/settings/index.vue'),
+      },
     ],
   },
   {
