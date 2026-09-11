@@ -1,12 +1,15 @@
 <script setup lang="ts">
+import type { AccountRow } from './constants'
 import { ChevronDown } from '@lucide/vue'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 
+import { setSchedulingSuspended } from '@/api'
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
 import BaseCard from '@/components/base/BaseCard.vue'
 import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
 import BasePageHeader from '@/components/base/BasePageHeader.vue'
+import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
 import BaseTable from '@/components/base/BaseTable/index.vue'
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
@@ -32,6 +35,19 @@ import { useAccountMutations } from './composables/useAccountMutations'
 import { useAccountsQuery } from './composables/useAccountsQuery'
 import { useAccountsTable } from './composables/useAccountsTable'
 import { accountColumns, derivedAccountStatus } from './constants'
+
+const schedulingSuspendedUpdating = reactive<Record<string, boolean>>({})
+
+async function toggleScheduling(row: AccountRow, suspended: boolean) {
+  schedulingSuspendedUpdating[row.id] = true
+  try {
+    await setSchedulingSuspended({ account_id: row.id, suspended })
+    row.schedulingSuspended = suspended
+  }
+  finally {
+    schedulingSuspendedUpdating[row.id] = false
+  }
+}
 
 const selectedIds = ref<Set<string>>(new Set())
 const {
@@ -253,6 +269,17 @@ const {
                 :error-message="row.errorMessage"
                 :rate-limited-until="row.quota.rateLimitedUntil"
                 :next-refresh-at="row.nextRefreshAt"
+              />
+            </template>
+
+            <template #schedulingSuspended="{ row }">
+              <BaseSwitch
+                :model-value="!row.schedulingSuspended"
+                label="切换账号调度"
+                :disabled="schedulingSuspendedUpdating[row.id]"
+                active-text="正常"
+                inactive-text="暂停"
+                @update:model-value="(val) => toggleScheduling(row, !val)"
               />
             </template>
 

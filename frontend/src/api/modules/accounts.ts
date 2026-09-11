@@ -124,6 +124,8 @@ export interface Account {
   authenticationKind: string
   hasRefreshToken: boolean
   status: AccountStatus
+  /** 是否暂停参与调度；旧接口未返回时按未暂停处理。 */
+  schedulingSuspended?: boolean
   errorReason: AccountErrorReason | null
   errorMessage: string | null
   enabled: boolean
