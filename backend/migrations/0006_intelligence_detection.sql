@@ -18,7 +18,7 @@ create table intelligence_detection_configs (
 create table intelligence_detection_records (
   id                  bigserial primary key,
   detection_round_id  uuid not null,
-  account_id          text not null references provider_accounts(id),
+  account_id          text not null references provider_accounts(id) on delete cascade,
   checked_at          timestamptz not null default now(),
   degraded            boolean not null,
   html_content        text,
