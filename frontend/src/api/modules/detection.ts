@@ -1,30 +1,31 @@
 import request from '../request'
 
+export interface DetectionAccountScope {
+  all?: boolean
+  account_ids?: string[]
+}
+
 export interface DetectionConfig {
   enabled: boolean
-  account_scope: { all: true } | { account_ids: string[] }
+  account_scope: DetectionAccountScope
   interval_secs: number
   model: string
 }
 
 export interface DetectionRound {
-  detection_round_id: string
-  checked_at: string
-  degraded_count: number
-  normal_count: number
+  id: string
+  started_at?: string
+  completed_at?: string | null
+  status?: string
+  [key: string]: unknown
 }
 
 export interface DetectionRecord {
   id: number
-  detection_round_id: string
-  account_id: string
-  account_email?: string | null
-  account_name?: string | null
-  account_plan_type?: string | null
-  account_plan_type_display?: string | null
-  checked_at: string
-  degraded: boolean
-  scheduling_suspended: boolean
+  detection_round_id?: string
+  account_id?: string
+  status?: string
+  [key: string]: unknown
 }
 
 export function getDetectionConfig() {
@@ -57,6 +58,6 @@ export function getDetectionRecords(roundId: string) {
   })
 }
 
-export function getDetectionRecordHtmlUrl(id: number) {
+export function getDetectionRecordHtmlUrl(id: number): string {
   return `/api/admin/detection/records/${id}/html`
 }

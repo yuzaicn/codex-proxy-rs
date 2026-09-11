@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Save } from '@lucide/vue'
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -11,6 +11,7 @@ import BaseSegmented from '@/components/base/BaseSegmented.vue'
 import AdminApiKeyCard from './components/AdminApiKeyCard.vue'
 import SettingsBackupSection from './components/backup/SettingsBackupSection.vue'
 import ClientVersionSettings from './components/client-version/index.vue'
+import DetectionSettingsCard from './components/DetectionSettingsCard.vue'
 import ModelAliasesCard from './components/ModelAliasesCard.vue'
 import RotationStrategyCard from './components/RotationStrategyCard.vue'
 import RuntimeSettingsCard from './components/RuntimeSettingsCard.vue'
@@ -20,19 +21,21 @@ import { rotationOptions } from './constants'
 
 const route = useRoute()
 const router = useRouter()
+const detectionCard = ref<{ load: () => Promise<void> } | null>(null)
 
-type SettingsSection = 'runtime' | 'backup'
+type SettingsSection = 'runtime' | 'backup' | 'detection'
 
 const section = computed<SettingsSection>(() =>
-  route.name === 'settings-backup' ? 'backup' : 'runtime',
+  route.name === 'settings-backup' ? 'backup' : route.name === 'settings-detection' ? 'detection' : 'runtime',
 )
 
 function switchSection(value: string): void {
   const paths: Record<SettingsSection, string> = {
     runtime: '/settings',
     backup: '/settings/backup',
+    detection: '/settings/detection',
   }
-  const nextSection: SettingsSection = value === 'backup' ? 'backup' : 'runtime'
+  const nextSection: SettingsSection = value === 'backup' || value === 'detection' ? value : 'runtime'
   void router.push(paths[nextSection])
 }
 
@@ -76,6 +79,9 @@ watch(
       void loadSettings()
       void loadAdminApiKeyStatus()
     }
+    else if (value === 'detection') {
+      void detectionCard.value?.load()
+    }
   },
   { immediate: true },
 )
@@ -93,6 +99,7 @@ watch(
         :options="[
           { label: '运行设置', value: 'runtime' },
           { label: '备份', value: 'backup' },
+          { label: '降智检测', value: 'detection' },
         ]"
         @update:model-value="switchSection"
       />
@@ -161,6 +168,10 @@ watch(
           确定要删除当前管理员 API Key 吗？此操作会立即生效
         </p>
       </BaseConfirmModal>
+    </div>
+
+    <div v-else-if="section === 'detection'" class="mt-5 grid w-full gap-5">
+      <DetectionSettingsCard ref="detectionCard" :active="section === 'detection'" />
     </div>
 
     <div v-else class="mt-5">

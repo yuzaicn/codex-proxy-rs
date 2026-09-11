@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  ActivitySquare,
   ArrowUpCircle,
   ChartNoAxesColumn,
   FolderTree,
@@ -13,6 +12,7 @@ import {
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
+  ScanSearch,
   Settings,
   Sun,
   Users,
@@ -56,24 +56,24 @@ const systemUpdateStore = useSystemUpdateStore()
 const settingsStore = useSettingsStore()
 const themeStore = useThemeStore()
 const { version, hasUpdate } = storeToRefs(systemUpdateStore)
-const { effectiveTheme } = storeToRefs(themeStore)
 const { detectionEnabled } = storeToRefs(settingsStore)
+const { effectiveTheme } = storeToRefs(themeStore)
 const { toggleTheme } = themeStore
 const preferredMotion = usePreferredReducedMotion()
 
-const navItems = computed(() => [
+const baseNavItems = [
   { label: '概览', icon: LayoutDashboard, path: '/' },
   { label: '账号管理', icon: Users, path: '/accounts' },
   { label: '代理管理', icon: Network, path: '/proxies' },
   { label: '分组管理', icon: FolderTree, path: '/account-groups' },
   { label: 'API 密钥', icon: KeyRound, path: '/api-keys' },
   { label: '使用统计', icon: ChartNoAxesColumn, path: '/usage' },
-  ...(detectionEnabled.value
-    ? [{ label: '检测记录', icon: ActivitySquare, path: '/detection' }]
-    : []),
   { label: '主题设置', icon: Palette, path: '/theme' },
   { label: '系统设置', icon: Settings, path: '/settings' },
-])
+]
+const navItems = computed(() => detectionEnabled.value
+  ? [...baseNavItems, { label: '降智检测', icon: ScanSearch, path: '/settings/detection' }]
+  : baseNavItems)
 
 function isActive(path: string) {
   if (path === '/')
@@ -262,7 +262,7 @@ function animateNavSignal() {
 }
 
 onMounted(() => {
-  void settingsStore.loadDetectionConfig().catch(() => undefined)
+  void settingsStore.loadDetectionConfig()
   gsap.set(sidebarEl.value, {
     width: sidebarWidth.value,
     flexBasis: sidebarWidth.value,
