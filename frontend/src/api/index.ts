@@ -15,6 +15,9 @@ export * from './modules/backups'
 // Dashboard 聚合
 export * from './modules/dashboard'
 
+// 降智检测
+export * from './modules/detection'
+
 export * from './modules/proxies'
 
 // 设置管理

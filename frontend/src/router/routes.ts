@@ -41,6 +41,11 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/views/usage/index.vue'),
       },
       {
+        path: 'detection',
+        name: 'detection',
+        component: () => import('@/views/detection/index.vue'),
+      },
+      {
         path: 'theme',
         name: 'theme',
         component: () => import('@/views/theme/index.vue'),

@@ -467,6 +467,14 @@ export function batchUpdateAccounts(data: AccountBatchUpdateParam) {
   })
 }
 
+export function setSchedulingSuspended(data: { account_id: string, suspended: boolean }) {
+  return request<void>({
+    url: '/api/admin/accounts/set-scheduling-suspended',
+    method: 'POST',
+    data,
+  })
+}
+
 export function deleteAccounts(data: AccountDeleteParams) {
   return request<AccountDeletionResponse>({
     url: '/api/admin/accounts/delete',
