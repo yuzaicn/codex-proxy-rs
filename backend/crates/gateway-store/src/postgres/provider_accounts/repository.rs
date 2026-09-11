@@ -808,8 +808,6 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            access_token_expires_at = excluded.access_token_expires_at,
            next_refresh_at = excluded.next_refresh_at,
            enabled = excluded.enabled,
-           scheduling_suspended = excluded.scheduling_suspended,
-           scheduling_suspended_by = excluded.scheduling_suspended_by,
            credential_state = excluded.credential_state,
            provider_quota_json = null,
            quota_access_state = 'unknown',
