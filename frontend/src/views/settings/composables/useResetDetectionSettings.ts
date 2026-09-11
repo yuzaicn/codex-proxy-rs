@@ -20,7 +20,7 @@ export function useResetDetectionSettings() {
     enabled: false,
     interval: '3600',
     intervalUnit: 'seconds' as ResetDetectionIntervalUnit,
-    accountScope: 'all' as ResetDetectionAccountScope,
+    accountScope: 'all_non_error' as ResetDetectionAccountScope,
     autoUseResetCard: false,
   })
 

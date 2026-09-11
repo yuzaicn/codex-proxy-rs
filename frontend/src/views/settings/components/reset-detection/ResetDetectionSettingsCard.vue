@@ -107,7 +107,7 @@ const ACCOUNT_SCOPE_OPTIONS = [
               v-model="autoUseResetCard"
               label="自动使用重置卡"
               show-label
-              :disabled="loading"
+              :disabled="!enabled || loading"
             />
           </div>
           <p class="m-0 pl-6 text-cp-xs leading-[1.4] font-emphasis text-cp-warning-text">
@@ -117,7 +117,7 @@ const ACCOUNT_SCOPE_OPTIONS = [
 
         <p class="col-span-full m-0 flex items-center gap-2 text-cp-xs font-emphasis text-cp-text-quaternary">
           <ShieldCheck class="size-3.5 shrink-0" />
-          关闭重置检测时会保留轮询周期与检测范围，重新开启后无需重复配置。
+          关闭重置检测时会保留轮询周期、检测范围与自动使用设置，重新开启后无需重复配置。
         </p>
       </BaseForm>
     </div>
