@@ -261,6 +261,9 @@ use gateway_core::error::{
     ClientVisibleUpstreamResponse, GatewayErrorKind, ProviderError, ProviderErrorKind, StoreError,
     StoreErrorKind,
 };
+use gateway_core::event::{
+    ContentItem, ContentKind, GatewayEvent, ProviderEvent, ReasoningDelta, ResponseMeta, TextDelta,
+};
 use gateway_core::operation::{
     GenerateRequest, ImageRequest, ImageRequestKind, Operation, OperationKind, ProtocolPayload,
     RawJsonPayload,
@@ -317,6 +320,31 @@ fn account_probe_should_not_write_to_the_persistent_execution_store() {
     assert_eq!(error.source(), AccountProbeErrorSource::Gateway);
     assert_eq!(error.send_state(), None);
     assert!(!store.touched.load(Ordering::SeqCst));
+}
+
+#[test]
+fn account_probe_should_collect_reasoning_from_an_upstream_stream() {
+    let service = DefaultExecutionService::new(
+        RuntimeSnapshotHandle::new(probe_snapshot()),
+        Arc::new(TrackingExecutionStore::default()),
+        ProviderRegistry::new([Arc::new(ReasoningProvider) as Arc<dyn Provider>])
+            .expect("provider registry"),
+        Arc::new(UnusedAdmissions),
+        Arc::new(UnusedCircuits),
+        Arc::new(UnusedContinuation),
+        Arc::new(RecordingClientApiKeyUsage::default()),
+    );
+
+    let result = block_on(service.probe(AccountProbeRequest {
+        account_id: ProviderAccountId::new("acct_probe").expect("account ID"),
+        provider_kind: ProviderKind::new("openai").expect("provider kind"),
+        upstream_model: UpstreamModelId::new("gpt-probe").expect("model ID"),
+        operation: probe_operation(),
+    }))
+    .expect("probe with reasoning stream");
+
+    assert_eq!(result.reasoning, vec!["upstream reasoning".to_owned()]);
+    assert_eq!(result.text, vec!["final answer".to_owned()]);
 }
 
 #[test]
@@ -422,6 +450,69 @@ fn probe_observation_store_failure_preserves_the_provider_error() {
 }
 
 struct FailingProvider;
+
+struct ReasoningProvider;
+
+#[async_trait]
+impl Provider for ReasoningProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn catalog_generation(&self) -> ProviderCatalogGeneration {
+        ProviderCatalogGeneration::default()
+    }
+
+    async fn query_model_capabilities(
+        &self,
+    ) -> Result<Vec<ProviderModelCapabilities>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn execute(
+        &self,
+        request: ProviderRequest,
+        _: AttemptContext,
+    ) -> Result<ProviderStream, ProviderError> {
+        let metadata = ProviderCallMetadata::new(
+            request.candidate().provider().clone(),
+            UpstreamModelId::new("gpt-probe").expect("model"),
+            ProviderAccountId::new("acct_probe").expect("account"),
+            UpstreamTransport::new("http_json").expect("transport"),
+        );
+        let events = vec![
+            Ok(ProviderEvent::canonical(GatewayEvent::Started(
+                ResponseMeta::new("resp_probe", "gpt-probe"),
+            ))),
+            Ok(ProviderEvent::canonical(GatewayEvent::ContentAdded(
+                ContentItem::new(0, ContentKind::Reasoning),
+            ))),
+            Ok(ProviderEvent::canonical(GatewayEvent::ReasoningDelta(
+                ReasoningDelta {
+                    content_index: 0,
+                    text: "upstream reasoning".to_owned(),
+                },
+            ))),
+            Ok(ProviderEvent::canonical(GatewayEvent::ContentAdded(
+                ContentItem::new(1, ContentKind::Text),
+            ))),
+            Ok(ProviderEvent::canonical(GatewayEvent::TextDelta(
+                TextDelta {
+                    content_index: 1,
+                    text: "final answer".to_owned(),
+                },
+            ))),
+            Ok(ProviderEvent::canonical(GatewayEvent::Completed(
+                ResponseMeta::new("resp_probe", "gpt-probe"),
+            ))),
+        ];
+        Ok(ProviderStream::new(
+            metadata,
+            futures::stream::iter(events),
+            (),
+        ))
+    }
+}
 
 #[async_trait]
 impl Provider for FailingProvider {

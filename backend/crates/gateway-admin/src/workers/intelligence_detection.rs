@@ -285,7 +285,9 @@ impl IntelligenceDetectionTask {
                 account_id: target.account_id.clone(),
                 degraded,
                 html_content: Some(extract_html_document(&text)),
-                reasoning_content: Some(reasoning),
+                // An empty vector means no reasoning event was emitted. Keep
+                // that state nullable so it is not mistaken for captured text.
+                reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
                 prompt_used: Some(prompt.to_owned()),
                 matched_phrases: matched,
             })

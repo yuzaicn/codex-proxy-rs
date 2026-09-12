@@ -598,6 +598,19 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
         encoded.body().get("stream").and_then(Value::as_bool),
         Some(true)
     );
+    let reasoning = encoded
+        .body()
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .expect("reasoning options");
+    assert_eq!(
+        reasoning.get("effort").and_then(Value::as_str),
+        Some("high")
+    );
+    assert_eq!(
+        reasoning.get("summary").and_then(Value::as_str),
+        Some("auto")
+    );
 
     let account_id = account.id().clone();
     let quota = admin

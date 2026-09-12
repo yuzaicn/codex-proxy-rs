@@ -1292,6 +1292,13 @@ fn build_connection_test_operation(
     );
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
+    // Reasoning summaries are opt-in on the Responses API.  Detection consumes
+    // the canonical reasoning deltas, so the diagnostic request must explicitly
+    // ask the upstream to emit them instead of relying on the model default.
+    body.insert(
+        "reasoning".to_owned(),
+        serde_json::json!({"effort": "high", "summary": "auto"}),
+    );
     let payload = ProtocolPayload::json_object("openai", body)
         .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
     Ok(Operation::Generate(GenerateRequest::from_protocol_payload(
