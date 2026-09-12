@@ -1363,9 +1363,11 @@ fn build_operation(
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
     if include_reasoning_summary {
+        // Ask the upstream for a visible reasoning summary so diagnostic probes
+        // can evaluate the model's reasoning, not just its final response.
         body.insert(
             "reasoning".to_owned(),
-            serde_json::json!({"summary": "auto"}),
+            serde_json::json!({"effort": "high", "summary": "detailed"}),
         );
     }
     let payload = ProtocolPayload::json_object("openai", body)

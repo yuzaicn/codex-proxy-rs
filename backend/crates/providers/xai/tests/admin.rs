@@ -353,9 +353,18 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
             .body()
             .get("reasoning")
             .and_then(Value::as_object)
+            .and_then(|reasoning| reasoning.get("effort"))
+            .and_then(Value::as_str),
+        Some("high")
+    );
+    assert_eq!(
+        detection_encoded
+            .body()
+            .get("reasoning")
+            .and_then(Value::as_object)
             .and_then(|reasoning| reasoning.get("summary"))
             .and_then(Value::as_str),
-        Some("auto")
+        Some("detailed")
     );
 
     let quota = admin
