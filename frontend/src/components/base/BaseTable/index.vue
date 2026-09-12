@@ -14,7 +14,9 @@ import {
   cellValue,
   columnSortKey,
   columnStyle,
+  computeColumnLayout,
   resolveColumns,
+  stickyColumnOffsets,
   stickyStyle,
   tableStyle,
 } from './columns'
@@ -35,7 +37,11 @@ const emit = defineEmits<{
 }>()
 const slots = useSlots()
 const computedColumns = computed(() => resolveColumns(props.columns))
-const resolvedTableStyle = computed(() => tableStyle(computedColumns.value))
+// 实测滚动容器宽度；null 表示尚未测量（无行或未挂载），布局回退为各列基准宽度。
+const containerWidth = shallowRef<number | null>(null)
+const columnLayout = computed(() => computeColumnLayout(computedColumns.value, containerWidth.value))
+const stickyOffsets = computed(() => stickyColumnOffsets(computedColumns.value, columnLayout.value.widths))
+const resolvedTableStyle = computed(() => tableStyle(columnLayout.value, containerWidth.value !== null))
 
 const retainedRows = shallowRef<Row[]>([])
 watch(
@@ -59,8 +65,10 @@ function measureHorizontalScroll() {
   if (!wrap) {
     horizontalScrolled.value = false
     horizontalCanScrollRight.value = false
+    containerWidth.value = null
     return
   }
+  containerWidth.value = wrap.clientWidth
   const range = Math.max(wrap.scrollWidth - wrap.clientWidth, 0)
   horizontalScrolled.value = wrap.scrollLeft > 1
   horizontalCanScrollRight.value = wrap.scrollLeft < range - 1
@@ -90,7 +98,12 @@ const headerRowClass = computed(() => [
   'font-bold text-cp-text-secondary',
 ])
 const bodyRowClass = computed(() => (props.density === 'compact' ? 'h-cp-table-row-sm' : 'h-cp-table-row'))
-const cellPaddingClass = computed(() => (props.density === 'compact' ? 'px-3' : 'px-4'))
+// 列处于压缩区间时同步收窄水平内边距，把更多空间让给内容。
+const cellPaddingClass = computed(() => {
+  if (props.density === 'compact')
+    return columnLayout.value.compressed ? 'px-2' : 'px-3'
+  return columnLayout.value.compressed ? 'px-2.5' : 'px-4'
+})
 const bodyTextClass = computed(() => (props.density === 'compact' ? 'text-cp-sm' : 'text-cp'))
 const bodyCellFrameClass = computed(() =>
   props.density === 'compact'
@@ -201,7 +214,11 @@ function sortButtonLabel(column: ResolvedTableColumn<Row>) {
       >
         <table ref="table" class="table-fixed border-separate border-spacing-0 text-left" :style="resolvedTableStyle">
           <colgroup>
-            <col v-for="column in computedColumns" :key="column.key" :style="columnStyle(column, computedColumns)">
+            <col
+              v-for="(column, columnIndex) in computedColumns"
+              :key="column.key"
+              :style="columnStyle(columnLayout, columnIndex)"
+            >
           </colgroup>
           <thead>
             <tr :class="headerRowClass">
@@ -217,7 +234,7 @@ function sortButtonLabel(column: ResolvedTableColumn<Row>) {
                   columnIndex === computedColumns.length - 1 ? 'pr-6' : undefined,
                   stickyClass(column, true),
                 ]"
-                :style="stickyStyle(column)"
+                :style="stickyStyle(column, stickyOffsets[columnIndex])"
                 scope="col"
                 :aria-sort="columnAriaSort(column)"
               >
@@ -276,7 +293,7 @@ function sortButtonLabel(column: ResolvedTableColumn<Row>) {
                     stickyClass(column),
                     rowBackgroundClass(row, index),
                   ]"
-                  :style="stickyStyle(column)"
+                  :style="stickyStyle(column, stickyOffsets[columnIndex])"
                 >
                   <div class="grid content-center" :class="bodyCellContentClass">
                     <div :class="cellContentClass(column)" :title="bodyCellTitle(column, row)">

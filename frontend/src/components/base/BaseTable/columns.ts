@@ -24,6 +24,8 @@ export interface BaseTableColumn<Row extends TableRow = TableRow> {
   label?: string
   kind?: TableColumnKind
   size?: TableColumnSize
+  /** 容器变窄时该列允许压缩到的最小宽度（px）；缺省按 size 查压缩下限表，且不会超过列的基准宽度。 */
+  minWidth?: number
   fixedWidth?: boolean
   align?: TableColumnAlign
   sortable?: boolean | string
@@ -52,6 +54,8 @@ export interface BaseTableProps<Row extends TableRow> {
 interface ColumnRecipe {
   size: TableColumnSize
   basisWidth?: number
+  /** false 表示容器变宽时不参与拉伸（控制列与操作列固定观感，也让 sticky 偏移可预期）。 */
+  stretch?: false
   align: TableColumnAlign
   truncate: boolean
   contentClass?: string
@@ -68,6 +72,21 @@ const columnWidths: Record<TableColumnSize, number> = {
   '2xl': 240,
   '3xl': 288,
   '4xl': 352,
+}
+
+/**
+ * 各档 size 的压缩下限：容器宽度不足以摆下全部基准宽度时，列先按比例压缩到这里，
+ * 再触发横向滚动。下限保证常规内容（徽标、相对时间、可截断文本）仍可读。
+ */
+const columnMinWidths: Record<TableColumnSize, number> = {
+  'xs': 56,
+  'sm': 64,
+  'md': 80,
+  'lg': 108,
+  'xl': 136,
+  '2xl': 160,
+  '3xl': 192,
+  '4xl': 248,
 }
 
 const columnRecipes: Record<TableColumnKind, ColumnRecipe> = {
@@ -102,7 +121,8 @@ const columnRecipes: Record<TableColumnKind, ColumnRecipe> = {
     size: 'xl',
     align: 'left',
     truncate: false,
-    contentClass: 'whitespace-nowrap font-mono text-cp-sm tabular-nums text-cp-text-secondary',
+    // 不再强制 nowrap：列压缩到不足一行时在“日期 时间”的空格处折行，避免溢出相邻列。
+    contentClass: 'font-mono text-cp-sm leading-snug tabular-nums text-cp-text-secondary',
   },
   mono: {
     size: 'xl',
@@ -119,6 +139,7 @@ const columnRecipes: Record<TableColumnKind, ColumnRecipe> = {
   selection: {
     size: 'xs',
     basisWidth: 48,
+    stretch: false,
     align: 'center',
     truncate: false,
     paddingClass: 'px-2',
@@ -127,6 +148,7 @@ const columnRecipes: Record<TableColumnKind, ColumnRecipe> = {
   expander: {
     size: 'xs',
     basisWidth: 40,
+    stretch: false,
     align: 'center',
     truncate: false,
     paddingClass: 'px-2',
@@ -134,6 +156,7 @@ const columnRecipes: Record<TableColumnKind, ColumnRecipe> = {
   },
   actions: {
     size: 'md',
+    stretch: false,
     align: 'left',
     truncate: false,
     paddingClass: 'px-3',
@@ -150,12 +173,13 @@ export interface ResolvedTableColumn<Row extends TableRow = TableRow>
   extends BaseTableColumn<Row> {
   kind: TableColumnKind
   basisWidth: number
+  minWidth: number
+  stretch: boolean
   align: TableColumnAlign
   truncate: boolean
   contentClass?: string
   paddingClass?: string
   sticky?: TableColumnSticky
-  stickyOffset?: number
 }
 
 export function defineTableColumns<Row extends TableRow>(columns: BaseTableColumn<Row>[]) {
@@ -165,15 +189,22 @@ export function defineTableColumns<Row extends TableRow>(columns: BaseTableColum
 export function resolveColumns<Row extends TableRow>(
   columns: BaseTableColumn<Row>[],
 ): ResolvedTableColumn<Row>[] {
-  const resolved = columns.map((column): ResolvedTableColumn<Row> => {
+  return columns.map((column): ResolvedTableColumn<Row> => {
     const kind = column.kind ?? 'text'
     const recipe = columnRecipes[kind]
     const basisWidth = recipe.basisWidth ?? columnWidths[column.size ?? recipe.size]
+    // fixedWidth 列与配方内置宽度的控制列（expander/selection）宽度恒定：不拉伸也不压缩。
+    const pinned = column.fixedWidth === true || recipe.basisWidth !== undefined
+    const minWidth = pinned
+      ? basisWidth
+      : Math.min(basisWidth, column.minWidth ?? columnMinWidths[column.size ?? recipe.size])
 
     return {
       ...column,
       kind,
       basisWidth,
+      minWidth,
+      stretch: pinned ? false : recipe.stretch !== false,
       align: column.align ?? recipe.align,
       truncate: recipe.truncate,
       contentClass: recipe.contentClass,
@@ -181,54 +212,117 @@ export function resolveColumns<Row extends TableRow>(
       sticky: recipe.sticky,
     }
   })
+}
+
+export interface TableColumnLayout {
+  /** 每列最终宽度（px），与列数组一一对应，取整后合计恰为 tableWidth。 */
+  widths: number[]
+  tableWidth: number
+  /** 容器宽度不足以摆下全部基准宽度、列处于压缩区间时为 true。 */
+  compressed: boolean
+}
+
+/**
+ * 由实测容器宽度分配各列像素宽度：
+ * - 容器 ≥ Σ基准宽：可拉伸列按基准宽比例分享富余空间；
+ * - Σ下限 ≤ 容器 < Σ基准宽：各列按自身可压缩余量（基准宽 − 下限）等比压缩，恰好填满容器；
+ * - 容器 < Σ下限：各列取下限，表格宽于容器，交给横向滚动。
+ * 尚未完成测量（containerWidth 为 null）时回退为基准宽度。
+ */
+export function computeColumnLayout<Row extends TableRow>(
+  columns: ResolvedTableColumn<Row>[],
+  containerWidth: number | null,
+): TableColumnLayout {
+  const basisTotal = columns.reduce((total, column) => total + column.basisWidth, 0)
+  if (containerWidth === null || columns.length === 0)
+    return { widths: columns.map(column => column.basisWidth), tableWidth: basisTotal, compressed: false }
+
+  const minTotal = columns.reduce((total, column) => total + column.minWidth, 0)
+  const tableWidth = Math.round(Math.max(containerWidth, minTotal))
+
+  let targets: number[]
+  if (tableWidth >= basisTotal) {
+    const stretchable = columns.some(column => column.stretch)
+    const stretchBasis = columns.reduce(
+      (total, column) => total + (!stretchable || column.stretch ? column.basisWidth : 0),
+      0,
+    )
+    const extra = tableWidth - basisTotal
+    targets = columns.map(column =>
+      (!stretchable || column.stretch) && stretchBasis > 0
+        ? column.basisWidth + (extra * column.basisWidth) / stretchBasis
+        : column.basisWidth,
+    )
+  }
+  else {
+    const slackTotal = columns.reduce((total, column) => total + (column.basisWidth - column.minWidth), 0)
+    const deficit = basisTotal - tableWidth
+    targets = columns.map(column =>
+      column.basisWidth
+      - (slackTotal > 0 ? (deficit * (column.basisWidth - column.minWidth)) / slackTotal : 0),
+    )
+  }
+
+  // 逐列累计取整，保证列宽合计与表宽一致，sticky 偏移不会因舍入漂移。
+  const widths: number[] = []
+  let targetTotal = 0
+  let assignedTotal = 0
+  for (const target of targets) {
+    targetTotal += target
+    const width = Math.round(targetTotal - assignedTotal)
+    widths.push(width)
+    assignedTotal += width
+  }
+
+  return { widths, tableWidth: assignedTotal, compressed: tableWidth < basisTotal }
+}
+
+/** 按最终列宽计算 sticky 列偏移；与百分比时代不同，任何容器宽度下都与实际渲染宽度一致。 */
+export function stickyColumnOffsets<Row extends TableRow>(
+  columns: ResolvedTableColumn<Row>[],
+  widths: number[],
+): Array<number | undefined> {
+  const offsets: Array<number | undefined> = Array.from({ length: columns.length })
 
   let leftOffset = 0
-  for (const column of resolved) {
+  columns.forEach((column, index) => {
     if (column.sticky !== 'left')
-      continue
-    column.stickyOffset = leftOffset
-    leftOffset += column.basisWidth
-  }
+      return
+    offsets[index] = leftOffset
+    leftOffset += widths[index] ?? column.basisWidth
+  })
 
   let rightOffset = 0
-  for (const column of [...resolved].reverse()) {
-    if (column.sticky !== 'right')
+  for (let index = columns.length - 1; index >= 0; index -= 1) {
+    const column = columns[index]
+    if (column?.sticky !== 'right')
       continue
-    column.stickyOffset = rightOffset
-    rightOffset += column.basisWidth
+    offsets[index] = rightOffset
+    rightOffset += widths[index] ?? column.basisWidth
   }
 
-  return resolved
+  return offsets
 }
 
-export function minimumTableWidth<Row extends TableRow>(columns: ResolvedTableColumn<Row>[]) {
-  return columns.reduce((total, column) => total + column.basisWidth, 0)
+export function tableStyle(layout: TableColumnLayout, measured: boolean) {
+  // 未测量时保持既有“max(100%, 基准宽合计)”行为，首帧观感与旧实现一致。
+  return measured
+    ? { width: `${layout.tableWidth}px` }
+    : { width: `max(100%, ${layout.tableWidth}px)` }
 }
 
-export function tableStyle<Row extends TableRow>(columns: ResolvedTableColumn<Row>[]) {
-  return { width: `max(100%, ${minimumTableWidth(columns)}px)` }
+export function columnStyle(layout: TableColumnLayout, index: number) {
+  const width = layout.widths[index]
+  return width === undefined ? undefined : { width: `${width}px` }
 }
 
-export function columnStyle<Row extends TableRow>(
+export function stickyStyle<Row extends TableRow>(
   column: ResolvedTableColumn<Row>,
-  columns: ResolvedTableColumn<Row>[],
+  offset: number | undefined,
 ) {
-  const fixedWidth = columns.reduce((total, item) => total + (item.fixedWidth ? item.basisWidth : 0), 0)
-  const flexibleWidth = minimumTableWidth(columns) - fixedWidth
-  const ratio = flexibleWidth > 0 ? column.basisWidth / flexibleWidth : 0
-
-  return {
-    width: column.fixedWidth
-      ? `${column.basisWidth}px`
-      : `${ratio * 100}%`,
-    minWidth: `${column.basisWidth}px`,
-  }
-}
-
-export function stickyStyle<Row extends TableRow>(column: ResolvedTableColumn<Row>) {
   if (!column.sticky)
     return undefined
-  return { [column.sticky]: `${column.stickyOffset ?? 0}px` }
+  return { [column.sticky]: `${offset ?? 0}px` }
 }
 
 export function alignClass<Row extends TableRow>(column: ResolvedTableColumn<Row>) {
