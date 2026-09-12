@@ -359,7 +359,7 @@ export function useAccountOnboarding(options: {
       catch (error) {
         if (!isRetryableImportError(error) || attempt === 3) {
           row.status = isNeedsActionImportError(error) ? 'needs_action' : 'failed'
-          row.error = isNeedsActionImportError(error)
+          row.error = isInvalidCredentialImportError(error)
             ? '凭据无效或已失效，请检查后更换'
             : importFailureMessage(error)
           return
@@ -524,9 +524,21 @@ export function useAccountOnboarding(options: {
   }
 }
 
+// 管理端业务错误码（backend admin wire contract）。50201 与 50202 同为 HTTP 502，
+// 裸 status 区分不了两者，重试判定必须按 code 分桶。
+const CODE_CONFLICT = 40901
+const CODE_BAD_GATEWAY = 50201
+const CODE_UPSTREAM_RESULT_UNKNOWN = 50202
+
+// 允许自动重试的业务错误码：请求未在上游生效（50201 请求失败、50301 依赖不可用、
+// 5000x 服务内部错误）或可安全重放（40901 状态冲突）。50202「上游执行结果未知」
+// 被刻意排除：请求可能已到达上游并轮换 refresh token，自动重放可能触发
+// refresh_token_reused 被判永久 invalid-grant，把可恢复的凭据打成死账号。
+const AUTO_RETRYABLE_IMPORT_CODES = new Set([CODE_CONFLICT, 50000, 50001, 50002, CODE_BAD_GATEWAY, 50301])
+
 function importFailureMessage(error: unknown) {
   if (isAmbiguousImportError(error))
-    return '上游执行结果未知，账号可能已导入；重试是安全的（同账号会更新，不会重复创建）'
+    return '上游执行结果未知：该账号可能已经导入成功。请先刷新账号列表确认；确认未导入再手动重试——重试会重新提交凭据，可能使该 refresh token 失效'
   return errorMessage(error, '导入失败')
 }
 
@@ -540,17 +552,28 @@ function importResponseFailure(result: { failures?: Array<{ code: string, retrya
 function isAmbiguousImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
-  return error.code === 50202 || error.code === 40901 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
+  return error.code === CODE_UPSTREAM_RESULT_UNKNOWN || error.code === CODE_CONFLICT || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
 }
 
 function isRetryableImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
+  if (typeof error.code === 'number')
+    return AUTO_RETRYABLE_IMPORT_CODES.has(error.code)
+  // 无业务码的传输层失败（网关 HTML 错误页、超时、断网）维持原判定。
   return error.status >= 500 || error.status === 409 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
 }
 
-function isNeedsActionImportError(error: unknown) {
+function isUpstreamResultUnknownError(error: unknown) {
+  return error instanceof ApiError && error.code === CODE_UPSTREAM_RESULT_UNKNOWN
+}
+
+function isInvalidCredentialImportError(error: unknown) {
   return error instanceof ApiError && (error.status === 400 || error.status === 404)
+}
+
+function isNeedsActionImportError(error: unknown) {
+  return isUpstreamResultUnknownError(error) || isInvalidCredentialImportError(error)
 }
 
 function wait(ms: number) {
