@@ -390,6 +390,9 @@ pub trait DetectionStore: Send + Sync {
     /// 读取最近的检测批次聚合，按检测时间倒排。
     async fn list_detection_rounds(&self, limit: u32) -> AdminStoreResult<Vec<DetectionRound>>;
 
+    /// 读取最近一条检测记录的落库时间；没有成功落库的轮次时返回 `None`。
+    async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>>;
+
     /// 检测 Worker 按账号范围读取待探测账号及其调度暂停事实。
     async fn list_detection_targets(
         &self,

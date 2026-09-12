@@ -14,6 +14,7 @@ use gateway_core::task::WorkerKind;
 use crate::ApiState;
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+const READINESS_EXCLUDED_PROBE: &str = "postgres_schema";
 
 #[derive(Clone)]
 pub(crate) struct HealthStatus {
@@ -43,7 +44,11 @@ impl HealthStatus {
         {
             return false;
         }
-        let checks = self.probes.iter().map(|probe| probe.check());
+        let checks = self
+            .probes
+            .iter()
+            .filter(|probe| probe.name() != READINESS_EXCLUDED_PROBE)
+            .map(|probe| probe.check());
         tokio::time::timeout(HEALTH_CHECK_TIMEOUT, join_all(checks))
             .await
             .is_ok_and(|states| {
@@ -52,10 +57,31 @@ impl HealthStatus {
                     .all(|state| matches!(state, HealthState::Healthy))
             })
     }
+
+    pub(crate) async fn ready(&self) -> bool {
+        tokio::time::timeout(
+            HEALTH_CHECK_TIMEOUT,
+            join_all(self.probes.iter().map(|probe| probe.check())),
+        )
+        .await
+        .is_ok_and(|states| {
+            states
+                .into_iter()
+                .all(|state| matches!(state, HealthState::Healthy))
+        })
+    }
 }
 
 pub(crate) async fn healthz(State(state): State<ApiState>) -> StatusCode {
     if state.health().healthy().await {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+pub(crate) async fn ready(State(state): State<ApiState>) -> StatusCode {
+    if state.health().ready().await {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::SERVICE_UNAVAILABLE

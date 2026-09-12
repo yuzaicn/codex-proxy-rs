@@ -203,6 +203,7 @@ pub async fn initialize(mut config: StoreConfig) -> StoreResult<StoreBundle> {
         Arc::new(RedisHealthProbe {
             connection: redis_connection,
         }),
+        Arc::new(postgres::PostgresSchemaHealthProbe::new(pool.clone())),
     ];
     let worker_contributions = store_worker_contributions(
         execution_repository,

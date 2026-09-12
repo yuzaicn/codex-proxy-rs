@@ -11,7 +11,10 @@ use gateway_core::{
         StartProviderExecution, StartedExecution,
     },
     error::GatewayError,
-    health::{WorkerHealthKey, WorkerHealthSnapshot, WorkerHealthSource, WorkerRuntimeState},
+    health::{
+        HealthProbe, HealthState, WorkerHealthKey, WorkerHealthSnapshot, WorkerHealthSource,
+        WorkerRuntimeState,
+    },
     routing::PublicModelId,
     task::{WorkerId, WorkerKind},
 };
@@ -86,6 +89,76 @@ async fn healthz_should_reject_critical_worker_failure() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+#[tokio::test]
+async fn ready_should_return_no_content_when_all_dependencies_are_healthy() {
+    let probes = ["postgres", "redis", "postgres_schema", "runtime_snapshot"]
+        .into_iter()
+        .map(|name| Arc::new(StaticProbe::healthy(name)) as Arc<dyn HealthProbe>)
+        .collect();
+    let response = crate::openai::api_router_with_probes(Arc::new(UnusedExecution), probes)
+        .await
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .expect("ready request"),
+        )
+        .await
+        .expect("ready response");
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn ready_should_return_service_unavailable_when_a_dependency_is_unhealthy() {
+    let probes = vec![
+        Arc::new(StaticProbe::healthy("postgres")) as Arc<dyn HealthProbe>,
+        Arc::new(StaticProbe::unhealthy("redis")),
+        Arc::new(StaticProbe::healthy("postgres_schema")),
+        Arc::new(StaticProbe::healthy("runtime_snapshot")),
+    ];
+    let response = crate::openai::api_router_with_probes(Arc::new(UnusedExecution), probes)
+        .await
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .expect("ready request"),
+        )
+        .await
+        .expect("ready response");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn healthz_should_keep_liveness_when_schema_probe_is_unhealthy() {
+    let probes = vec![Arc::new(StaticProbe::unhealthy("postgres_schema")) as Arc<dyn HealthProbe>];
+    let router = crate::openai::api_router_with_probes(Arc::new(UnusedExecution), probes).await;
+    let healthz = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .expect("health request"),
+        )
+        .await
+        .expect("health response");
+    let ready = router
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .expect("ready request"),
+        )
+        .await
+        .expect("ready response");
+
+    assert_eq!(healthz.status(), StatusCode::NO_CONTENT);
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
 #[derive(Clone)]
 struct StaticWorkerHealth(Vec<WorkerHealthSnapshot>);
 
@@ -106,6 +179,38 @@ fn worker_snapshot(kind: WorkerKind, state: WorkerRuntimeState) -> WorkerHealthS
         last_success_at: None,
         last_failure_at: None,
         last_error: Some("test worker failure".to_owned()),
+    }
+}
+
+struct StaticProbe {
+    name: &'static str,
+    state: HealthState,
+}
+
+impl StaticProbe {
+    fn healthy(name: &'static str) -> Self {
+        Self {
+            name,
+            state: HealthState::Healthy,
+        }
+    }
+
+    fn unhealthy(name: &'static str) -> Self {
+        Self {
+            name,
+            state: HealthState::Unhealthy("test failure".to_owned()),
+        }
+    }
+}
+
+impl HealthProbe for StaticProbe {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn check(&self) -> BoxFuture<'_, HealthState> {
+        let state = self.state.clone();
+        Box::pin(async move { state })
     }
 }
 
