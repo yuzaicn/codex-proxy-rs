@@ -25,6 +25,8 @@ export interface DetectionRecord {
   checked_at: string
   degraded: boolean
   scheduling_suspended: boolean
+  // 触发判定的思考过程正文；0007 迁移前的旧记录不回填，读到 null/缺失属正常。
+  reasoning_content?: string | null
 }
 
 export function getDetectionConfig() {

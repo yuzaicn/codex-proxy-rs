@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DetectionRecord, DetectionRound } from '@/api'
 import { ChevronDown, Eye, PauseCircle, PlayCircle, RefreshCw } from '@lucide/vue'
-import { onMounted, ref, shallowReactive } from 'vue'
+import { computed, onMounted, ref, shallowReactive } from 'vue'
 
 import { getDetectionRecordHtmlUrl, getDetectionRecords, getDetectionRounds, setSchedulingSuspended } from '@/api'
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -9,6 +9,7 @@ import BaseCard from '@/components/base/BaseCard.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import BasePageHeader from '@/components/base/BasePageHeader.vue'
+import BaseScrollbar from '@/components/base/BaseScrollbar.vue'
 import BaseTable from '@/components/base/BaseTable/index.vue'
 import { toast } from '@/components/base/BaseToast'
 import { errorMessage } from '@/utils/async'
@@ -22,8 +23,14 @@ const openRounds = ref(new Set<string>())
 const recordsByRound = shallowReactive<Record<string, DetectionRecord[]>>({})
 const recordsLoading = shallowReactive<Record<string, boolean>>({})
 const actionBusyKey = ref<string | null>(null)
-const htmlModalVisible = ref(false)
-const currentRecordId = ref<number | null>(null)
+const detailModalVisible = ref(false)
+const currentRecord = ref<DetectionRecord | null>(null)
+
+// 空白正文与旧记录的 null 同样按「未采集」展示，避免弹出空 <pre>。
+const currentReasoning = computed(() => {
+  const reasoning = currentRecord.value?.reasoning_content
+  return reasoning?.trim() ? reasoning : null
+})
 
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
@@ -109,9 +116,9 @@ async function toggleScheduling(round: DetectionRound, record: DetectionRecord) 
   }
 }
 
-function viewHtml(record: DetectionRecord) {
-  currentRecordId.value = record.id
-  htmlModalVisible.value = true
+function viewDetail(record: DetectionRecord) {
+  currentRecord.value = record
+  detailModalVisible.value = true
 }
 
 onMounted(() => {
@@ -240,11 +247,11 @@ onMounted(() => {
                     </template>
                     {{ row.scheduling_suspended ? '恢复调度' : '暂停调度' }}
                   </BaseButton>
-                  <BaseButton size="sm" variant="ghost" aria-label="查看检测响应效果" @click="viewHtml(row)">
+                  <BaseButton size="sm" variant="ghost" aria-label="查看检测记录详情" @click="viewDetail(row)">
                     <template #icon>
                       <Eye class="size-3.5" />
                     </template>
-                    查看效果
+                    查看详情
                   </BaseButton>
                 </div>
               </template>
@@ -254,14 +261,36 @@ onMounted(() => {
       </div>
     </BaseCard>
 
-    <BaseModal v-model="htmlModalVisible" title="检测响应效果" size="lg">
-      <iframe
-        v-if="currentRecordId !== null"
-        :src="getDetectionRecordHtmlUrl(currentRecordId)"
-        sandbox="allow-scripts"
-        title="检测响应效果"
-        class="h-[520px] w-full rounded-cp border border-cp-border-secondary"
-      />
+    <BaseModal v-model="detailModalVisible" title="检测记录详情" size="lg">
+      <div v-if="currentRecord" class="flex flex-col gap-3">
+        <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+          <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+            思考过程
+          </p>
+          <BaseScrollbar v-if="currentReasoning" max-height="240px">
+            <div class="pt-2">
+              <pre
+                class="m-0 whitespace-pre-wrap wrap-break-word font-mono text-cp-sm leading-[1.65] text-cp-text"
+                v-text="currentReasoning"
+              />
+            </div>
+          </BaseScrollbar>
+          <p v-else class="mt-2 mb-0 text-cp-sm font-emphasis text-cp-text-quaternary">
+            该记录未采集思考过程
+          </p>
+        </div>
+        <div>
+          <p class="m-0 mb-2 text-cp-xs font-heavy text-cp-text-quaternary">
+            响应效果
+          </p>
+          <iframe
+            :src="getDetectionRecordHtmlUrl(currentRecord.id)"
+            sandbox="allow-scripts"
+            title="检测响应效果"
+            class="h-[520px] w-full rounded-cp border border-cp-border-secondary"
+          />
+        </div>
+      </div>
     </BaseModal>
   </div>
 </template>
