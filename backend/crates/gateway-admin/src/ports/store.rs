@@ -41,7 +41,8 @@ use crate::model::{
         ProviderExportCredentialInput,
     },
     reset_detection::{
-        ReplaceResetDetectionSettings, ResetDetectionSettings, ResetDetectionSettingsMutation,
+        CompleteResetCreditConsume, ReplaceResetDetectionSettings, ResetCreditConsumeReservation,
+        ResetDetectionSettings, ResetDetectionSettingsMutation,
     },
     settings::{AdminApiKey, AdminApiKeyMutation, ReplaceRuntimeSettings, RuntimeSettings},
 };
@@ -435,6 +436,27 @@ pub trait ResetDetectionStore: Send + Sync {
         command: ReplaceResetDetectionSettings,
         context: &MutationContext,
     ) -> AdminStoreResult<ResetDetectionSettingsMutation>;
+
+    /// 写回上游重置卡数量观测；不推进配置 revision。
+    async fn record_reset_credits_observation(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+        available_count: u64,
+        observed_at: DateTime<Utc>,
+    ) -> AdminStoreResult<()>;
+
+    /// 在不可逆调用前持久化 UUIDv4；账号已有未完成请求时固定复用旧值。
+    async fn reserve_reset_credit_consume(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+        candidate: uuid::Uuid,
+    ) -> AdminStoreResult<ResetCreditConsumeReservation>;
+
+    /// 仅在消费结果确定时结束幂等请求；歧义状态必须保持未完成。
+    async fn complete_reset_credit_consume(
+        &self,
+        completion: CompleteResetCreditConsume,
+    ) -> AdminStoreResult<()>;
 }
 
 struct UnavailableResetDetectionStore;
@@ -457,6 +479,42 @@ impl ResetDetectionStore for UnavailableResetDetectionStore {
         Err(AdminStoreError::new(
             AdminStoreErrorKind::Unavailable,
             "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn record_reset_credits_observation(
+        &self,
+        _account_id: &gateway_core::account::ProviderAccountId,
+        _available_count: u64,
+        _observed_at: DateTime<Utc>,
+    ) -> AdminStoreResult<()> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credits observation",
+            "store is unavailable",
+        ))
+    }
+
+    async fn reserve_reset_credit_consume(
+        &self,
+        _account_id: &gateway_core::account::ProviderAccountId,
+        _candidate: uuid::Uuid,
+    ) -> AdminStoreResult<ResetCreditConsumeReservation> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credit consume reservation",
+            "store is unavailable",
+        ))
+    }
+
+    async fn complete_reset_credit_consume(
+        &self,
+        _completion: CompleteResetCreditConsume,
+    ) -> AdminStoreResult<()> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credit consume completion",
             "store is unavailable",
         ))
     }

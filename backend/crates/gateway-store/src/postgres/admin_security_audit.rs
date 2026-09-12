@@ -158,6 +158,20 @@ pub(crate) async fn append_admin_audit_event_in_transaction(
         i64::try_from(revision.get())
             .map_err(|_| invalid("config revision exceeds PostgreSQL bigint"))?,
     );
+    insert_admin_audit_event_in_transaction(transaction, event).await
+}
+
+pub(crate) async fn append_admin_audit_event_without_revision_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    event: AdminAuditEvent,
+) -> StoreResult<()> {
+    insert_admin_audit_event_in_transaction(transaction, event).await
+}
+
+async fn insert_admin_audit_event_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    event: AdminAuditEvent,
+) -> StoreResult<()> {
     event.validate()?;
     sqlx::query(
         "insert into admin_audit_events (
@@ -180,6 +194,43 @@ pub(crate) async fn append_admin_audit_event_in_transaction(
     .await
     .map_err(|_| postgres_unavailable("append admin audit event in transaction"))?;
     Ok(())
+}
+
+/// 在同一审计实体上查找仍未出现终态事件的最早请求。
+pub(crate) async fn load_unfinished_audit_request_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    started_action: &str,
+    finished_action: &str,
+    entity_kind: &str,
+    entity_ref: &str,
+) -> StoreResult<Option<String>> {
+    sqlx::query_scalar(
+        "select started.admin_request_id
+           from admin_audit_events started
+          where started.actor_kind = 'system'
+            and started.action = $1
+            and started.entity_kind = $2
+            and started.entity_ref = $3
+            and started.admin_request_id is not null
+            and not exists (
+              select 1
+                from admin_audit_events finished
+               where finished.actor_kind = 'system'
+                 and finished.action = $4
+                 and finished.entity_kind = started.entity_kind
+                 and finished.entity_ref = started.entity_ref
+                 and finished.admin_request_id = started.admin_request_id
+            )
+          order by started.created_at, started.id
+          limit 1",
+    )
+    .bind(started_action)
+    .bind(entity_kind)
+    .bind(entity_ref)
+    .bind(finished_action)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| postgres_unavailable("load unfinished audit request"))
 }
 
 fn invalid(message: &str) -> StoreError {

@@ -531,13 +531,16 @@ impl FakeAccountStore {
             .push(context.request_id.clone());
     }
 
-    fn page_item(account: AccountRecord) -> AccountPageItem {
+    fn page_item(
+        account: AccountRecord,
+        rate_limited_until: Option<chrono::DateTime<Utc>>,
+    ) -> AccountPageItem {
         let facts = AccountStatusFacts {
             enabled: account.enabled,
             credential_state: account.credential_state,
             access_token_expires_at: account.access_token_expires_at.map(Into::into),
             quota: account.quota,
-            rate_limited_until: None,
+            rate_limited_until: rate_limited_until.map(Into::into),
             last_error_reason: account.last_error_reason,
             last_error_message: account.last_error_message.clone(),
         };
@@ -553,14 +556,20 @@ impl AccountStore for FakeAccountStore {
     async fn list_accounts(
         &self,
         _: AccountListQuery,
-        _: AccountRuntimeSnapshot,
+        runtime: AccountRuntimeSnapshot,
     ) -> AdminStoreResult<AccountPage> {
         self.record("store.list_accounts");
         let accounts = self.accounts.lock().expect("accounts").clone();
         let total = accounts.len() as u64;
         Ok(AccountPage {
             config_revision: revision(1),
-            items: accounts.into_iter().map(Self::page_item).collect(),
+            items: accounts
+                .into_iter()
+                .map(|account| {
+                    let rate_limited_until = runtime.rate_limited_until.get(&account.id).copied();
+                    Self::page_item(account, rate_limited_until)
+                })
+                .collect(),
             total,
             summary: AccountSummary {
                 total,
@@ -576,7 +585,7 @@ impl AccountStore for FakeAccountStore {
     async fn load_account(
         &self,
         account_id: &str,
-        _: AccountRuntimeSnapshot,
+        runtime: AccountRuntimeSnapshot,
     ) -> AdminStoreResult<Option<AccountPageItem>> {
         self.record("store.load_account");
         // probe 后的账号状态覆盖只对同一 id 生效；其余按账号列表查询。
@@ -594,7 +603,10 @@ impl AccountStore for FakeAccountStore {
                     .find(|account| account.id == account_id)
                     .cloned()
             });
-        Ok(account.map(Self::page_item))
+        Ok(account.map(|account| {
+            let rate_limited_until = runtime.rate_limited_until.get(&account.id).copied();
+            Self::page_item(account, rate_limited_until)
+        }))
     }
 
     async fn load_account_usage(

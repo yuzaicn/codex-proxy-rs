@@ -63,6 +63,7 @@ const WEAK_INITIAL_PASSWORDS: &[&str] = &[
 
 const BACKUP_WORKER_OWNER: &str = "backup";
 const DETECTION_WORKER_OWNER: &str = "detection";
+const RESET_DETECTION_WORKER_OWNER: &str = "reset-detection";
 /// 检测 Worker 的固定唤醒间隔；真实轮次节奏由配置里的 `interval_secs` 在任务内部把关。
 const DETECTION_WORKER_TICK: Duration = Duration::from_secs(60);
 const DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -70,6 +71,12 @@ const DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
 /// 单副本部署不启用 leader lease；schedule 仍要求合法的 lease 参数占位。
 const DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
 const DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
+/// 重置卡配置最短为 30 秒；固定 tick 使后台修改在一个最短周期内生效。
+const RESET_DETECTION_WORKER_TICK: Duration = Duration::from_secs(30);
+const RESET_DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const RESET_DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
+const RESET_DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
+const RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 
 /// 只用于首次幂等创建默认管理员的启动密码。
 #[derive(Clone, Deserialize)]
@@ -328,7 +335,7 @@ pub async fn initialize(
             registry.clone(),
         )),
         auth,
-        accounts,
+        accounts: accounts.clone(),
         account_groups: Arc::new(DefaultAccountGroupService::new(
             store.account_groups(),
             store.account_runtime(),
@@ -380,8 +387,15 @@ pub async fn initialize(
         probe,
         snapshot,
     );
+    let reset_detection_task = workers::reset_detection::ResetDetectionTask::new(
+        store.reset_detection(),
+        store.accounts(),
+        store.account_runtime(),
+        accounts,
+    );
     let mut worker_contributions = backup_worker_contribution(backup_task)?;
     worker_contributions.extend(detection_worker_contribution(detection_task)?);
+    worker_contributions.extend(reset_detection_worker_contribution(reset_detection_task)?);
     Ok(AdminBundle {
         services,
         worker_contributions,
@@ -430,6 +444,32 @@ fn detection_worker_contribution(
         },
     )
     .map_err(|_| AdminError::internal("降智检测 Worker 注册信息不合法"))?;
+    Ok(vec![WorkerContribution::Registration(registration)])
+}
+
+/// 重置卡检测 Worker 注册：单副本无 lease 的周期任务，owner 固定为 `reset-detection`。
+fn reset_detection_worker_contribution(
+    task: workers::reset_detection::ResetDetectionTask,
+) -> Result<Vec<WorkerContribution>, AdminError> {
+    let id = WorkerId::try_new(WorkerKind::ResetDetection, RESET_DETECTION_WORKER_OWNER)
+        .map_err(|_| AdminError::internal("重置卡检测 Worker ID 不合法"))?;
+    let schedule = WorkerSchedule::try_new(
+        RESET_DETECTION_WORKER_TICK,
+        RESET_DETECTION_WORKER_INITIAL_BACKOFF,
+        RESET_DETECTION_WORKER_MAXIMUM_BACKOFF,
+        RESET_DETECTION_WORKER_UNUSED_LEASE_TTL,
+        RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL,
+    )
+    .map_err(|_| AdminError::internal("重置卡检测 Worker 调度参数不合法"))?;
+    let registration = WorkerRegistration::try_new(
+        id,
+        WorkerRunnable::Scheduled {
+            schedule,
+            lease: None,
+            task: Box::new(task),
+        },
+    )
+    .map_err(|_| AdminError::internal("重置卡检测 Worker 注册信息不合法"))?;
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 

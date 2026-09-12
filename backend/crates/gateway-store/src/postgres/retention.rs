@@ -157,8 +157,23 @@ impl RetentionRepository for PgRetentionRepository {
             RetentionTarget::new(
                 "delete from admin_audit_events
                  where ctid in (
-                   select ctid from admin_audit_events
-                    where created_at < $1 - ($2 * interval '1 day')
+                   select candidate.ctid from admin_audit_events candidate
+                    where candidate.created_at < $1 - ($2 * interval '1 day')
+                      and (
+                        candidate.action <> 'reset_detection.auto_consume_started'
+                        or exists (
+                          select 1 from admin_audit_events finished
+                           where finished.action = 'reset_detection.auto_consume_finished'
+                             and finished.entity_kind = candidate.entity_kind
+                             and finished.entity_ref = candidate.entity_ref
+                             and finished.admin_request_id = candidate.admin_request_id
+                          )
+                      )
+                    order by
+                      case when candidate.action = 'reset_detection.auto_consume_started'
+                        then 0 else 1 end,
+                      candidate.created_at,
+                      candidate.id
                     limit $3
                  )",
                 settings.audit_retention_days,

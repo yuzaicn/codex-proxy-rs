@@ -71,6 +71,7 @@ fn worker_affects_healthz(worker: &WorkerHealthSnapshot) -> bool {
         WorkerKind::OAuthRefresh
             | WorkerKind::QuotaCatalogHealth
             | WorkerKind::IntelligenceDetection
+            | WorkerKind::ResetDetection
     )
 }
 

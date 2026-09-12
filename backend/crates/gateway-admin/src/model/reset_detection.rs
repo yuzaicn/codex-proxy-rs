@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use gateway_core::account::{AccountStatus, ProviderAccountId};
+use uuid::Uuid;
 
 use super::Revision;
 
@@ -63,4 +65,33 @@ pub struct ReplaceResetDetectionSettings {
 pub struct ResetDetectionSettingsMutation {
     pub config_revision: Revision,
     pub settings: ResetDetectionSettings,
+}
+
+/// 自动消费开始前持久化的幂等请求；`resumed` 表示复用了未完成请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetCreditConsumeReservation {
+    pub redeem_request_id: Uuid,
+    pub resumed: bool,
+}
+
+/// 自动消费确定终态的审计事实；结果未知或额度复核失败时不得写入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteResetCreditConsume {
+    pub account_id: ProviderAccountId,
+    pub redeem_request_id: Uuid,
+    pub outcome: ResetCreditConsumeOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetCreditConsumeOutcome {
+    Confirmed {
+        provider_code: String,
+        quota_status: AccountStatus,
+    },
+    Rejected {
+        provider_code: String,
+    },
+    Failed {
+        error_kind: String,
+    },
 }
