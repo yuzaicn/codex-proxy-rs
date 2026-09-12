@@ -79,14 +79,14 @@ impl fmt::Debug for ImportCredentials {
 pub struct CredentialImportResult {
     pub config_revision: Revision,
     pub credential_ids: Vec<ProviderAccountId>,
-    pub created_count: usize,
+    pub inserted_count: usize,
     pub updated_count: usize,
     pub failures: Vec<CredentialImportFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialImportFailure {
-    /// Zero-based position in the submitted document.
+    /// Zero-based position in the submitted document. The API presents this as 1-based.
     pub index: usize,
     pub code: &'static str,
     pub retryable: bool,

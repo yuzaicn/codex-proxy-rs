@@ -267,7 +267,7 @@ impl PgAdminAccountStore {
                         "provider account import returned an invalid account ID",
                     )
                 })?,
-            created_count: imported.created_count,
+            inserted_count: imported.inserted_count,
             updated_count: imported.updated_count,
             failures,
         })
@@ -570,7 +570,7 @@ impl AccountStore for PgAdminAccountStore {
                 let CredentialImportResult {
                     config_revision,
                     credential_ids,
-                    created_count: _,
+                    inserted_count: _,
                     updated_count: _,
                     failures: _,
                 } = self

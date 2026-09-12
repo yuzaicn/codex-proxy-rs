@@ -520,14 +520,14 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                 }
             }
             let mut account_ids = Vec::with_capacity(command.accounts.len());
-            let mut created_count = 0;
+            let mut inserted_count = 0;
             let mut updated_count = 0;
             for account in &command.accounts {
                 let (account_id, inserted) =
                     upsert_provider_account_in_transaction(&mut transaction, account).await?;
                 account_ids.push(account_id);
                 if inserted {
-                    created_count += 1;
+                    inserted_count += 1;
                 } else {
                     updated_count += 1;
                 }
@@ -560,7 +560,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
             Ok(ProviderAccountAdminImport {
                 config_revision: revision,
                 account_ids,
-                created_count,
+                inserted_count,
                 updated_count,
             })
         }

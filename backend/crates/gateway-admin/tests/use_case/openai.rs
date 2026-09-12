@@ -6,8 +6,9 @@ use gateway_core::account::ProviderAccountId;
 use gateway_admin::{
     AdminServices,
     model::provider_credentials::{
-        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion, CredentialMutation,
-        ImportCredentials, ProviderQuotaRequest, RotateCredential, StartAuthorization,
+        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion,
+        CredentialImportFailure, CredentialMutation, ImportCredentials, ProviderQuotaRequest,
+        RotateCredential, StartAuthorization,
     },
     ports::provider::ProviderAdminErrorKind,
 };
@@ -83,6 +84,79 @@ async fn openai_import_should_prepare_before_atomic_store_commit() {
         [Some(super::accounts::import_settings())]
     );
     assert_eq!(store.audit_requests(), ["import-openai"]);
+}
+
+#[tokio::test]
+async fn openai_import_should_return_all_failures_without_store_commit() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    provider.set_import_account_ids(&[]);
+    provider.set_import_failures(vec![
+        CredentialImportFailure {
+            index: 0,
+            code: "refresh_rejected",
+            retryable: false,
+            message: "该令牌已失效，请更换",
+        },
+        CredentialImportFailure {
+            index: 1,
+            code: "refresh_unavailable",
+            retryable: true,
+            message: "上游服务暂不可用，请稍后重试",
+        },
+    ]);
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = service(provider, store.clone()).await;
+
+    let result = services
+        .openai()
+        .import_document(ImportCredentials {
+            outbound_proxy_id: None,
+            settings: None,
+            context: context("import-openai-all-failures"),
+            document: document(),
+        })
+        .await
+        .expect("valid document should return a business result");
+
+    assert!(result.credential_ids.is_empty());
+    assert_eq!(result.inserted_count, 0);
+    assert_eq!(result.updated_count, 0);
+    assert_eq!(result.failures.len(), 2);
+    assert_eq!(recorded(&events), ["provider.prepare_import"]);
+    assert!(store.audit_requests().is_empty());
+}
+
+#[tokio::test]
+async fn openai_import_should_return_single_failure_for_single_row() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    provider.set_import_account_ids(&[]);
+    provider.set_import_failures(vec![CredentialImportFailure {
+        index: 0,
+        code: "invalid_credential",
+        retryable: false,
+        message: "凭据格式不合法",
+    }]);
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = service(provider, store.clone()).await;
+
+    let result = services
+        .openai()
+        .import_document(ImportCredentials {
+            outbound_proxy_id: None,
+            settings: None,
+            context: context("import-openai-single-failure"),
+            document: document(),
+        })
+        .await
+        .expect("single-row failure should be represented as a result");
+
+    assert_eq!(result.failures[0].index, 0);
+    assert_eq!(result.failures[0].code, "invalid_credential");
+    assert!(!result.failures[0].retryable);
+    assert_eq!(recorded(&events), ["provider.prepare_import"]);
+    assert!(store.audit_requests().is_empty());
 }
 
 #[tokio::test]

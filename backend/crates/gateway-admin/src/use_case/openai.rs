@@ -7,7 +7,7 @@ use gateway_core::runtime::SnapshotControl;
 
 use crate::{
     model::{
-        AdminError,
+        AdminError, Revision,
         provider_credentials::{
             AuthorizationStarted, CompleteAuthorization, CredentialDeletion,
             CredentialDeletionResult, CredentialImportCommit, CredentialImportResult,
@@ -104,6 +104,18 @@ impl OpenAiService for DefaultOpenAiService {
             &prepared,
             "OpenAI credential import",
         )?;
+        if prepared.credentials.is_empty() && !prepared.failures.is_empty() {
+            let failures = prepared.failures;
+            drop(proxy_reservation);
+            return Ok(CredentialImportResult {
+                // No credentials were committed, so the configuration revision is unchanged.
+                config_revision: Revision::new(1).expect("positive revision"),
+                credential_ids: Vec::new(),
+                inserted_count: 0,
+                updated_count: 0,
+                failures,
+            });
+        }
         let result = self
             .accounts
             .commit_credential_import(
