@@ -1535,7 +1535,7 @@ async fn terminal_admin_delete_removes_enabled_accounts_in_one_transaction() {
 }
 
 #[tokio::test]
-async fn admin_import_updates_the_same_verified_identity_without_rebinding_it() {
+async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_renaming_it() {
     let Some(database) = TestDatabase::create("provider_account_admin_upsert").await else {
         return;
     };
@@ -1594,7 +1594,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_it() 
     .fetch_one(&database.pool)
     .await
     .expect("load updated import");
-    assert_eq!(row.0, "updated import");
+    // Re-import refreshes credentials, but deliberately preserves the user's existing name.
+    assert_eq!(row.0, "acct_admin_upsert");
     assert_eq!(row.1["access_token"], "updated-import-secret");
     assert_eq!(row.2, 2);
     assert!(
