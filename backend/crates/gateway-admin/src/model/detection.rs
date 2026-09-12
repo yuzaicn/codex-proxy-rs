@@ -73,6 +73,8 @@ pub struct DetectionRecord {
     pub scheduling_suspended: bool,
     /// 探测响应中的思考过程，供降智判定复核。
     pub reasoning_content: Option<String>,
+    /// 本轮实际发送给模型的提示词。
+    pub prompt_used: Option<String>,
 }
 
 /// 检测记录分页查询；页码从 1 开始。
@@ -109,5 +111,6 @@ pub struct NewDetectionRecord {
     pub degraded: bool,
     pub html_content: Option<String>,
     pub reasoning_content: Option<String>,
+    pub prompt_used: Option<String>,
     pub matched_phrases: Vec<String>,
 }

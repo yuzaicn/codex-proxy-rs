@@ -41,6 +41,7 @@ type RecordRow = (
     DateTime<Utc>,
     bool,
     Option<String>,
+    Option<String>,
 );
 type RoundRow = (String, DateTime<Utc>, i64, i64);
 type TargetRow = (String, String, bool, Option<String>);
@@ -146,7 +147,7 @@ impl PgDetectionStore {
                     "select r.id, r.detection_round_id::text, r.account_id,
                             a.email, a.name, a.provider_kind, a.plan_type,
                             a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content
+                            r.reasoning_content, r.prompt_used
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      where r.detection_round_id = $1::uuid
@@ -163,7 +164,7 @@ impl PgDetectionStore {
                     "select r.id, r.detection_round_id::text, r.account_id,
                             a.email, a.name, a.provider_kind, a.plan_type,
                             a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content
+                            r.reasoning_content, r.prompt_used
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      order by r.checked_at desc, r.id desc limit $1 offset $2",
@@ -232,14 +233,15 @@ impl PgDetectionStore {
     async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
         sqlx::query(
             "insert into intelligence_detection_records
-             (detection_round_id, account_id, degraded, html_content, reasoning_content, matched_phrases)
-             values ($1::uuid, $2, $3, $4, $5, $6)",
+             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases)
+             values ($1::uuid, $2, $3, $4, $5, $6, $7)",
         )
         .bind(record.detection_round_id.to_string())
         .bind(&record.account_id)
         .bind(record.degraded)
         .bind(record.html_content.as_deref())
         .bind(record.reasoning_content.as_deref())
+        .bind(record.prompt_used.as_deref())
         .bind(record.matched_phrases.as_slice())
         .execute(&self.pool)
         .await
@@ -346,6 +348,7 @@ fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
         checked_at,
         degraded,
         reasoning_content,
+        prompt_used,
     ) = row;
     Ok(DetectionRecord {
         id,
@@ -360,6 +363,7 @@ fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
         degraded,
         scheduling_suspended,
         reasoning_content,
+        prompt_used,
     })
 }
 

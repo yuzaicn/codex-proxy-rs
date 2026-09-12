@@ -171,6 +171,7 @@ pub struct DetectionRecordView {
     pub degraded: bool,
     pub scheduling_suspended: bool,
     pub reasoning_content: Option<String>,
+    pub prompt_used: Option<String>,
 }
 
 impl From<DetectionRecord> for DetectionRecordView {
@@ -187,6 +188,7 @@ impl From<DetectionRecord> for DetectionRecordView {
             degraded: record.degraded,
             scheduling_suspended: record.scheduling_suspended,
             reasoning_content: record.reasoning_content,
+            prompt_used: record.prompt_used,
         }
     }
 }

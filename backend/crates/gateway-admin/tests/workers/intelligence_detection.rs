@@ -21,7 +21,7 @@ use gateway_admin::{
         store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult, DetectionStore},
     },
     workers::intelligence_detection::{
-        IntelligenceDetectionTask, extract_html_document, matched_phrases,
+        IntelligenceDetectionTask, extract_html_document, matched_phrases, prompt_for_round,
     },
 };
 use gateway_core::{
@@ -31,6 +31,7 @@ use gateway_core::{
     runtime::SnapshotControl,
     task::{ScheduledTask, WorkerCycleContext, WorkerId, WorkerKind},
 };
+use uuid::Uuid;
 
 use crate::use_case::accounts::{EventLog, FakeAccountStore, FakeProviderAdmin, account_record};
 
@@ -194,6 +195,16 @@ impl AccountProbe for CountingProbe {
             })
         })
     }
+}
+
+#[test]
+fn prompt_for_round_is_stable_and_covers_all_animals() {
+    let first = Uuid::from_bytes([0; 16]);
+    assert_eq!(prompt_for_round(first), prompt_for_round(first));
+    let prompts = (0_u8..=u8::MAX)
+        .map(|first_byte| prompt_for_round(Uuid::from_bytes([first_byte; 16])))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(prompts.len(), 12);
 }
 
 struct NoopSnapshot;

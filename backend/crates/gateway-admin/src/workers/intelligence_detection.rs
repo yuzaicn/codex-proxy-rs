@@ -39,8 +39,22 @@ use crate::{
     },
 };
 
-/// 探测固定提示词；降智账号对它的答复会退化为纯文本描述。
-const DETECTION_PROMPT: &str = "创建一个HTML，内容是SVG绘制一个企鹅骑自行车的2D动画。";
+/// 探测提示词模板；每轮从动物清单中稳定选择一个动物。
+const DETECTION_PROMPT_TEMPLATE: &str = "创建一个HTML，内容是SVG绘制一个{animal}骑自行车的2D动画。";
+const DETECTION_ANIMALS: &[&str] = &[
+    "企鹅",
+    "鹈鹕",
+    "猫",
+    "狗",
+    "熊猫",
+    "长颈鹿",
+    "章鱼",
+    "袋鼠",
+    "犀牛",
+    "火烈鸟",
+    "树懒",
+    "浣熊",
+];
 
 /// 单轮探测允许同时在途的账号数。
 const MAX_CONCURRENT_PROBES: usize = 16;
@@ -115,6 +129,7 @@ impl IntelligenceDetectionTask {
             return Ok(());
         }
         let round_id = Uuid::new_v4();
+        let prompt = prompt_for_round(round_id);
         info!(
             %round_id,
             targets = targets.len(),
@@ -124,6 +139,7 @@ impl IntelligenceDetectionTask {
         let outcomes = stream::iter(targets.into_iter().map(|target| {
             let cancellation = cancellation.clone();
             let upstream_model = upstream_model.clone();
+            let prompt = prompt.clone();
             async move {
                 if cancellation.is_cancelled() {
                     return None;
@@ -133,7 +149,7 @@ impl IntelligenceDetectionTask {
                     return None;
                 };
                 let degraded = match self
-                    .probe_and_record(&account_id, &target, &upstream_model, round_id)
+                    .probe_and_record(&account_id, &target, &upstream_model, &prompt, round_id)
                     .await
                 {
                     Ok(Some(degraded)) => degraded,
@@ -218,6 +234,7 @@ impl IntelligenceDetectionTask {
         account_id: &ProviderAccountId,
         target: &DetectionTarget,
         upstream_model: &UpstreamModelId,
+        prompt: &str,
         round_id: Uuid,
     ) -> Result<Option<bool>, WorkerTaskError> {
         let Ok(provider) = self.providers.require(&target.provider_kind) else {
@@ -228,7 +245,7 @@ impl IntelligenceDetectionTask {
             );
             return Ok(None);
         };
-        let operation = match provider.connection_test_operation(upstream_model, DETECTION_PROMPT) {
+        let operation = match provider.connection_test_operation(upstream_model, prompt) {
             Ok(operation) => operation,
             Err(error) => {
                 warn!(
@@ -269,6 +286,7 @@ impl IntelligenceDetectionTask {
                 degraded,
                 html_content: Some(extract_html_document(&text)),
                 reasoning_content: Some(reasoning),
+                prompt_used: Some(prompt.to_owned()),
                 matched_phrases: matched,
             })
             .await
@@ -334,6 +352,13 @@ impl ScheduledTask for IntelligenceDetectionTask {
 
 fn store_error(error: AdminStoreError) -> WorkerTaskError {
     WorkerTaskError::safe(error.to_string())
+}
+
+/// 为一轮检测生成可复现的提示词；同一轮所有账号共享这一提示词。
+#[must_use]
+pub fn prompt_for_round(round_id: Uuid) -> String {
+    let animal = DETECTION_ANIMALS[(round_id.as_bytes()[0] as usize) % DETECTION_ANIMALS.len()];
+    DETECTION_PROMPT_TEMPLATE.replace("{animal}", animal)
 }
 
 /// 返回响应（思考过程在前、最终答复在后）命中的降智指征。
