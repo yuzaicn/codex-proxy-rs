@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
 import type { AccountRow } from '../../constants'
 import type { AccountCreateForm, AccountImportMode } from './model'
 import type { AccountGroup } from '@/api'
@@ -22,9 +23,10 @@ const props = withDefaults(defineProps<{
   oauthLoading?: boolean
   reauthorizing?: boolean
   account?: AccountRow | null
+  tokenRows?: TokenImportRow[]
 }>(), { saving: false, oauthLoading: false, reauthorizing: false, account: null })
 
-const emit = defineEmits<{ create: [], generateOauth: [] }>()
+const emit = defineEmits<{ create: [], generateOauth: [], retryRow: [id: string], retryFailed: [], copyFailed: [], setRowKind: [payload: { id: string, kind: TokenImportKind }], removeRow: [id: string], setUnknownKind: [kind: TokenImportKind] }>()
 const open = defineModel<boolean>({ default: false })
 const form = defineModel<AccountCreateForm>('form', { required: true })
 const busy = computed(() => props.saving || props.oauthLoading)
@@ -115,6 +117,13 @@ function continueToImport() {
           :placeholder="view.importInput.placeholder"
           :uploadable="view.importInput.uploadable"
           :disabled="busy"
+          :rows="mode === 'auto' ? (props.tokenRows || []) : undefined"
+          @retry-row="emit('retryRow', $event)"
+          @retry-failed="emit('retryFailed')"
+          @copy-failed="emit('copyFailed')"
+          @set-row-kind="emit('setRowKind', $event)"
+          @remove-row="emit('removeRow', $event)"
+          @set-unknown-kind="emit('setUnknownKind', $event)"
         />
       </template>
     </div>

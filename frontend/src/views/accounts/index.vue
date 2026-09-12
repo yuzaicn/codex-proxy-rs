@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TokenImportKind } from './composables/useAccountOnboarding'
 import type { AccountRow } from './constants'
 import { ChevronDown } from '@lucide/vue'
 import { reactive, ref } from 'vue'
@@ -94,6 +95,7 @@ const {
   exportingAccounts,
   reauthorizingAccount,
   createForm,
+  tokenRows,
   handleCreate,
   handleAuthorizeOAuth,
   openCreateAccount,
@@ -105,12 +107,22 @@ const {
   handleRecover,
   handleRefresh,
   handleRefreshQuota,
+  retryImportRow,
+  retryFailedImports,
+  copyFailedImports,
+  setTokenRowKind,
+  removeTokenRow,
+  setUnknownKind,
 } = useAccountMutations({
   accounts,
   selectedIds,
   reload: () => Promise.all([loadAccounts(), loadGroups()]),
   replaceAccount,
 })
+
+function handleSetTokenRowKind(payload: { id: string, kind: TokenImportKind }) {
+  setTokenRowKind(payload.id, payload.kind)
+}
 
 const {
   showConnectionTestModal,
@@ -372,8 +384,15 @@ const {
       :oauth-loading="authorizingOAuth"
       :reauthorizing="Boolean(reauthorizingAccount)"
       :saving="creatingAccount"
+      :token-rows="tokenRows"
       @create="handleCreate"
       @generate-oauth="handleAuthorizeOAuth"
+      @retry-row="retryImportRow"
+      @retry-failed="retryFailedImports"
+      @copy-failed="copyFailedImports"
+      @set-row-kind="handleSetTokenRowKind"
+      @remove-row="removeTokenRow"
+      @set-unknown-kind="setUnknownKind"
     />
 
     <AccountEditModal

@@ -12,9 +12,7 @@ interface AccountCreatePresentationInput {
 const modeOptions = {
   openai: [
     { label: 'OAuth', value: 'oauth' },
-    { label: 'AT', value: 'access_token' },
-    { label: 'RT', value: 'refresh_token' },
-    { label: '账号文件', value: 'json' },
+    { label: '自动识别导入', value: 'auto' },
   ],
   xai: [
     { label: 'OAuth', value: 'oauth' },
@@ -80,10 +78,8 @@ function resolveModal(
     description = '粘贴或上传 xAI 账号文件，匹配已有账号时更新凭据'
   else if (input.form.mode === 'oauth')
     description = '通过浏览器授权导入 OpenAI 账号'
-  else if (input.form.mode === 'access_token')
-    description = '逐行粘贴 Access Token；未包含 Refresh Token 时无法自动续期'
-  else if (input.form.mode === 'refresh_token')
-    description = '逐行粘贴 Refresh Token，导入时将自动换取 Access Token'
+  else if (input.form.mode === 'auto')
+    description = '粘贴 Token 或 JSON，自动识别并逐行导入；失败项可单独重试'
 
   return {
     title: '导入账号',
@@ -113,20 +109,8 @@ function resolveImportInput(
   form: AccountCreateForm,
   provider: AccountCreateProvider | undefined,
 ) {
-  if (form.mode === 'access_token') {
-    return {
-      label: 'Access Token',
-      placeholder: '每行粘贴一个 Access Token',
-      uploadable: false,
-    }
-  }
-  if (form.mode === 'refresh_token') {
-    return {
-      label: 'Refresh Token',
-      placeholder: '每行粘贴一个 Refresh Token',
-      uploadable: false,
-    }
-  }
+  if (form.mode === 'auto')
+    return { label: 'OpenAI 凭据', placeholder: '每行一个 Token，或粘贴 JSON / JSONL 文档', uploadable: true }
   if (provider === 'batch') {
     return {
       label: '批量账号文件',
