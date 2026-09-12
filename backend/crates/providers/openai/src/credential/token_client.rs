@@ -12,7 +12,7 @@ use reqwest::{Client, StatusCode, header::RETRY_AFTER, redirect::Policy};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_REFRESH_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -746,9 +746,19 @@ fn refresh_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration>
     headers
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+        .and_then(parse_refresh_retry_after)
         .map(|retry_after| retry_after.min(MAX_REFRESH_RETRY_AFTER))
+}
+
+fn parse_refresh_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let target = httpdate::parse_http_date(value).ok()?;
+    let remaining = target.duration_since(SystemTime::now()).unwrap_or_default();
+    let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+    Some(Duration::from_secs(seconds))
 }
 
 fn refresh_transport_failure(error: &reqwest::Error) -> RefreshFailure {

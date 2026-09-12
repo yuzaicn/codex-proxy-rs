@@ -548,6 +548,7 @@ async fn recognized_refresh_codes_should_all_be_permanent() {
 async fn rate_limit_should_be_retryable_and_preserve_bounded_retry_after() {
     let body = r#"{"error":{"code":"temporarily_unavailable","message":"Try again."}}"#;
     for (header, expected) in [
+        (Some("0"), Some(Duration::ZERO)),
         (None, None),
         (Some("42"), Some(Duration::from_secs(42))),
         (Some("999"), Some(Duration::from_secs(300))),
@@ -571,6 +572,21 @@ async fn rate_limit_should_be_retryable_and_preserve_bounded_retry_after() {
         assert_eq!(failure.classification(), "upstream-rate-limited");
         assert!(failure.is_retryable());
     }
+}
+
+#[tokio::test]
+async fn rate_limit_should_normalize_http_date_retry_after_with_ceiling() {
+    let retry_at = SystemTime::now() + Duration::from_millis(1_500);
+    let retry_after = httpdate::fmt_http_date(retry_at);
+    let response = ResponseTemplate::new(429)
+        .insert_header("retry-after", retry_after)
+        .set_body_string(r#"{"error":{"message":"Try again."}}"#);
+    let failure = refresh_failure_with_response(response).await;
+
+    let RefreshFailure::UpstreamRateLimited { retry_after, .. } = failure else {
+        panic!("429 must classify as an upstream rate limit");
+    };
+    assert!(matches!(retry_after, Some(delay) if (1..=3).contains(&delay.as_secs())));
 }
 
 #[tokio::test]
@@ -666,4 +682,4 @@ async fn refresh_failure_with_response(response: ResponseTemplate) -> RefreshFai
         .await
         .expect_err("refresh must fail")
 }
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
