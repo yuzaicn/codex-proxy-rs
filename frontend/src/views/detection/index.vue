@@ -32,6 +32,12 @@ const currentReasoning = computed(() => {
   return reasoning?.trim() ? reasoning : null
 })
 
+// 旧记录没有提示词快照，直接隐藏该区块，不做占位。
+const currentPrompt = computed(() => {
+  const prompt = currentRecord.value?.prompt_used
+  return prompt?.trim() ? prompt : null
+})
+
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
   { key: 'checked_at', label: '检测时间', kind: 'datetime' as const, size: 'xl' as const },
@@ -263,6 +269,15 @@ onMounted(() => {
 
     <BaseModal v-model="detailModalVisible" title="检测记录详情" size="lg">
       <div v-if="currentRecord" class="flex flex-col gap-3">
+        <div v-if="currentPrompt" class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+          <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+            探测提示词
+          </p>
+          <pre
+            class="mt-2 mb-0 whitespace-pre-wrap wrap-break-word font-mono text-cp-sm leading-[1.65] text-cp-text"
+            v-text="currentPrompt"
+          />
+        </div>
         <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
           <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
             思考过程

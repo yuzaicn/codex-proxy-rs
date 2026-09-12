@@ -27,6 +27,8 @@ export interface DetectionRecord {
   scheduling_suspended: boolean
   // 触发判定的思考过程正文；0007 迁移前的旧记录不回填，读到 null/缺失属正常。
   reasoning_content?: string | null
+  // 本轮实际使用的探测提示词（动物逐轮随机），同为 0007 新增可空列，复核判定时对照。
+  prompt_used?: string | null
 }
 
 export function getDetectionConfig() {
