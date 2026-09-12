@@ -216,6 +216,14 @@ impl ProviderAdmin for OpenAiAdminProvider {
         build_connection_test_operation(upstream_model, input_text)
     }
 
+    fn intelligence_detection_operation(
+        &self,
+        upstream_model: &UpstreamModelId,
+        input_text: &str,
+    ) -> Result<Operation, ProviderAdminError> {
+        build_detection_operation(upstream_model, input_text)
+    }
+
     fn dashboard_wire_profile(&self) -> Option<DashboardWireProfile> {
         let profile = self.profile.snapshot();
         let release = self.desktop_release.snapshot();
@@ -1277,6 +1285,21 @@ fn build_connection_test_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
 ) -> Result<Operation, ProviderAdminError> {
+    build_operation(upstream_model, input_text, false)
+}
+
+fn build_detection_operation(
+    upstream_model: &UpstreamModelId,
+    input_text: &str,
+) -> Result<Operation, ProviderAdminError> {
+    build_operation(upstream_model, input_text, true)
+}
+
+fn build_operation(
+    upstream_model: &UpstreamModelId,
+    input_text: &str,
+    include_reasoning_summary: bool,
+) -> Result<Operation, ProviderAdminError> {
     let mut body = Map::new();
     body.insert(
         "model".to_owned(),
@@ -1292,6 +1315,12 @@ fn build_connection_test_operation(
     );
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
+    if include_reasoning_summary {
+        body.insert(
+            "reasoning".to_owned(),
+            serde_json::json!({"summary": "auto"}),
+        );
+    }
     let payload = ProtocolPayload::json_object("openai", body)
         .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
     Ok(Operation::Generate(GenerateRequest::from_protocol_payload(

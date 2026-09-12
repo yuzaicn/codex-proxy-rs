@@ -706,6 +706,14 @@ impl ProviderAdmin for UnavailableProvider {
         Err(unsupported_provider())
     }
 
+    fn intelligence_detection_operation(
+        &self,
+        _: &gateway_core::routing::UpstreamModelId,
+        _: &str,
+    ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
+        Err(unsupported_provider())
+    }
+
     fn dashboard_wire_profile(&self) -> Option<DashboardWireProfile> {
         self.dashboard_profile.clone()
     }

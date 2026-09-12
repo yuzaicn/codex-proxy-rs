@@ -328,6 +328,35 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
         encoded.body().get("stream").and_then(Value::as_bool),
         Some(true)
     );
+    assert!(
+        encoded.body().get("reasoning").is_none(),
+        "connection tests must not request reasoning summaries"
+    );
+
+    let detection_operation = admin
+        .intelligence_detection_operation(
+            &UpstreamModelId::new("grok-4.5").expect("upstream model"),
+            "Reply with exactly OK.",
+        )
+        .expect("detection operation");
+    let Operation::Generate(detection_request) = detection_operation else {
+        panic!("detection operation must be a generate operation");
+    };
+    let detection_encoded = provider_xai::GrokResponsesRequest::encode(
+        &detection_request,
+        "grok-4.5",
+        &ClientApiKeyId::new("admin_detection_test").expect("client key"),
+    )
+    .expect("official xAI detection request");
+    assert_eq!(
+        detection_encoded
+            .body()
+            .get("reasoning")
+            .and_then(Value::as_object)
+            .and_then(|reasoning| reasoning.get("summary"))
+            .and_then(Value::as_str),
+        Some("auto")
+    );
 
     let quota = admin
         .quota(ProviderQuotaRequest {

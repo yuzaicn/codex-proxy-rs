@@ -245,7 +245,7 @@ impl IntelligenceDetectionTask {
             );
             return Ok(None);
         };
-        let operation = match provider.connection_test_operation(upstream_model, prompt) {
+        let operation = match provider.intelligence_detection_operation(upstream_model, prompt) {
             Ok(operation) => operation,
             Err(error) => {
                 warn!(

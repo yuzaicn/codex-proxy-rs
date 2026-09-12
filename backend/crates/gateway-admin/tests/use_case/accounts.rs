@@ -245,6 +245,14 @@ impl ProviderAdmin for FakeProviderAdmin {
         )))
     }
 
+    fn intelligence_detection_operation(
+        &self,
+        model: &gateway_core::routing::UpstreamModelId,
+        input: &str,
+    ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
+        self.connection_test_operation(model, input)
+    }
+
     fn dashboard_wire_profile(
         &self,
     ) -> Option<gateway_admin::model::observability::DashboardWireProfile> {
