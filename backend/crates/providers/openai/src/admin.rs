@@ -1292,6 +1292,13 @@ fn build_connection_test_operation(
     );
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
+    // Responses only emits visible reasoning deltas when a summary mode is
+    // requested. Diagnostic probes must opt in so the detection worker can
+    // inspect the model's reasoning instead of only its final text.
+    body.insert(
+        "reasoning".to_owned(),
+        serde_json::json!({"effort": "high", "summary": "detailed"}),
+    );
     let payload = ProtocolPayload::json_object("openai", body)
         .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
     Ok(Operation::Generate(GenerateRequest::from_protocol_payload(

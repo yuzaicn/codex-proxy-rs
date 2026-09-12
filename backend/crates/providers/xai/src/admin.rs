@@ -1339,6 +1339,12 @@ fn build_connection_test_operation(
     );
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
+    // Ask the upstream for a visible reasoning summary so diagnostic probes
+    // can evaluate the model's reasoning, not just its final response.
+    body.insert(
+        "reasoning".to_owned(),
+        serde_json::json!({"effort": "high", "summary": "detailed"}),
+    );
     let payload = ProtocolPayload::json_object("openai", body)
         .map_err(|_| provider_error(ProviderAdminErrorKind::Invalid))?;
     Ok(Operation::Generate(GenerateRequest::from_protocol_payload(

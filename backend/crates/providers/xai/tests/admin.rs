@@ -328,6 +328,10 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
         encoded.body().get("stream").and_then(Value::as_bool),
         Some(true)
     );
+    assert_eq!(
+        encoded.body().get("reasoning"),
+        Some(&json!({"effort": "high", "summary": "detailed"}))
+    );
 
     let quota = admin
         .quota(ProviderQuotaRequest {
