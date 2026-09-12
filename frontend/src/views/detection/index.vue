@@ -418,9 +418,9 @@ onBeforeUnmount(() => {
                   :aria-label="`${previewStatusLabel(getPreviewState(row.id).status)}，点击查看详情`"
                 >
                   <div
+                    :ref="element => registerPreviewElement(element, row, round.detection_round_id)"
                     class="relative h-[150px] w-[240px] shrink-0 cursor-pointer overflow-hidden rounded-cp border border-cp-border-secondary bg-cp-bg-elevated outline-none transition-[border-color,box-shadow] hover:border-cp-primary-border focus-visible:border-cp-control-outline focus-visible:ring-2 focus-visible:ring-cp-control-outline motion-reduce:transition-none"
                     role="button"
-                    :ref="element => registerPreviewElement(element, row, round.detection_round_id)"
                     tabindex="0"
                     @click="viewDetail(row)"
                     @keydown="handlePreviewKeydown(row, $event)"
@@ -431,7 +431,7 @@ onBeforeUnmount(() => {
                       sandbox="allow-scripts"
                       title="检测响应缩略预览"
                       aria-hidden="true"
-                      class="pointer-events-none absolute left-0 top-0 h-[600px] w-[960px] origin-top-left scale-25 border-0"
+                      class="pointer-events-none absolute left-0 top-0 h-[800px] w-[1280px] origin-top-left scale-[0.1875] border-0"
                       @load="onPreviewFrameLoad(row.id)"
                       @error="onPreviewFrameError(row.id)"
                     />
