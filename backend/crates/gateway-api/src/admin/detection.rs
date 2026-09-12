@@ -3,7 +3,14 @@
 //! 该组端点的 wire 形状与前端 `detection.ts` 锁定为 snake_case，
 //! 记录与批次接口直接返回数组，不套分页信封。
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    body::Body,
+    extract::State,
+    http::{HeaderName, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use chrono::{DateTime, Utc};
 use gateway_admin::model::detection::{
     DetectionAccountScope, DetectionConfig, DetectionRecord, DetectionRecordQuery, DetectionRound,
@@ -89,6 +96,28 @@ impl UpdateDetectionConfigRequest {
             interval_secs: self.interval_secs,
             model: self.model,
         })
+    }
+}
+
+/// 检测记录 HTML 查询；管理端冻结为静态路径 + 查询参数，不使用路径参数。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DetectionRecordHtmlQuery {
+    pub id: Option<i64>,
+}
+
+impl DetectionRecordHtmlQuery {
+    /// 校验记录 ID：必填且为正整数。
+    pub fn validate(&self) -> Result<(), WireValidationError> {
+        match self.id {
+            Some(id) if id > 0 => Ok(()),
+            _ => Err(WireValidationError::new("id")),
+        }
+    }
+
+    fn into_id(self) -> Result<i64, WireValidationError> {
+        self.validate()?;
+        self.id.ok_or_else(|| WireValidationError::new("id"))
     }
 }
 
@@ -195,6 +224,10 @@ where
             "/api/admin/detection/records/rounds",
             get(detection_rounds::<S>),
         )
+        .route(
+            "/api/admin/detection/records/html",
+            get(detection_record_html::<S>),
+        )
 }
 
 async fn detection_config<S>(
@@ -277,6 +310,57 @@ where
         .map(DetectionRoundView::from)
         .collect::<Vec<_>>();
     Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(views)))
+}
+
+async fn detection_record_html<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(query): AdminQuery<DetectionRecordHtmlQuery>,
+) -> Result<Response, AdminError>
+where
+    S: AdminSessionState + Send + Sync,
+{
+    let record_id = query.into_id().map_err(map_wire_error)?;
+    let html = state
+        .admin_services()
+        .detection()
+        .record_html(record_id)
+        .await
+        .map_err(map_admin_service_error)?;
+    Ok(detection_record_html_response(html))
+}
+
+/// 将不受信的 AI 生成 HTML 投影为沙箱化同源响应。
+///
+/// `Content-Security-Policy: sandbox allow-scripts` 让文档无论在前端 iframe 里还是被
+/// 管理员直接打开都运行在 opaque origin：脚本可以执行（保留生成动画），但拿不到
+/// 管理端源的 Cookie、存储与 DOM，封死存储型 XSS；`nosniff` 防止类型嗅探绕过。
+#[must_use]
+pub fn detection_record_html_response(html: String) -> Response {
+    let mut response = Response::new(Body::from(html));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("sandbox allow-scripts"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
 }
 
 fn map_wire_error(error: WireValidationError) -> AdminError {

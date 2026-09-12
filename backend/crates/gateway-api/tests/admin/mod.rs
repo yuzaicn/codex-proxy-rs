@@ -80,6 +80,7 @@ mod account_groups;
 mod accounts;
 mod auth;
 mod client_keys;
+mod detection;
 mod errors;
 mod observability;
 mod proxies;
@@ -887,6 +888,10 @@ impl DetectionStore for UnusedStore {
         _: gateway_admin::model::detection::NewDetectionRecord,
     ) -> AdminStoreResult<()> {
         Err(unavailable("detection records"))
+    }
+
+    async fn load_detection_record_html(&self, _: i64) -> AdminStoreResult<Option<String>> {
+        Err(unavailable("detection record html"))
     }
 }
 

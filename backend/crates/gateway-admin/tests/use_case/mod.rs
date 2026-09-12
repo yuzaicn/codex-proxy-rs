@@ -668,6 +668,10 @@ impl DetectionStore for UnavailableStore {
     async fn insert_detection_record(&self, _: NewDetectionRecord) -> AdminStoreResult<()> {
         Err(unavailable("detection records"))
     }
+
+    async fn load_detection_record_html(&self, _: i64) -> AdminStoreResult<Option<String>> {
+        Err(unavailable("detection record html"))
+    }
 }
 
 struct UnavailableProvider {

@@ -392,6 +392,9 @@ pub trait DetectionStore: Send + Sync {
         scope: &DetectionAccountScope,
     ) -> AdminStoreResult<Vec<DetectionTarget>>;
 
+    /// 读取单条检测记录的 HTML 原文；记录不存在或 `html_content` 为 NULL 时返回 `None`。
+    async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>>;
+
     /// 检测 Worker 追加一条检测记录；观测数据不参与配置 revision 与审计。
     async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()>;
 }

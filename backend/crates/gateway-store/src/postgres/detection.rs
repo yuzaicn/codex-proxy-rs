@@ -214,6 +214,17 @@ impl PgDetectionStore {
         rows.map_err(|_| postgres_unavailable("list detection targets"))
     }
 
+    async fn load_record_html(&self, record_id: i64) -> StoreResult<Option<String>> {
+        let row = sqlx::query_scalar::<_, Option<String>>(
+            "select html_content from intelligence_detection_records where id = $1",
+        )
+        .bind(record_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| postgres_unavailable("load detection record html"))?;
+        Ok(row.flatten())
+    }
+
     async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
         sqlx::query(
             "insert into intelligence_detection_records
@@ -294,6 +305,12 @@ impl DetectionStore for PgDetectionStore {
 
     async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()> {
         self.insert_record(&record)
+            .await
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
+    async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>> {
+        self.load_record_html(record_id)
             .await
             .map_err(|error| admin_store_error(ENTITY, error))
     }

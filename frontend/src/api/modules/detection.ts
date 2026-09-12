@@ -57,6 +57,7 @@ export function getDetectionRecords(roundId: string) {
   })
 }
 
+// 管理端路由冻结为静态路径 + 查询参数（架构测试禁止路径参数），与后端契约一致。
 export function getDetectionRecordHtmlUrl(id: number) {
-  return `/api/admin/detection/records/${id}/html`
+  return `/api/admin/detection/records/html?id=${id}`
 }

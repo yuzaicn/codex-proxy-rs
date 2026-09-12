@@ -44,6 +44,9 @@ pub trait DetectionService: Send + Sync {
     ) -> Result<Vec<DetectionRecord>, AdminError>;
 
     async fn rounds(&self) -> Result<Vec<DetectionRound>, AdminError>;
+
+    /// 读取单条检测记录的 HTML 原文；记录不存在或没有 HTML 内容时返回 NotFound。
+    async fn record_html(&self, record_id: i64) -> Result<String, AdminError>;
 }
 
 pub(crate) struct DefaultDetectionService {
@@ -120,6 +123,17 @@ impl DetectionService for DefaultDetectionService {
             .list_detection_rounds(ROUNDS_LIMIT)
             .await
             .map_err(|error| map_store_error(error, "detection rounds"))
+    }
+
+    async fn record_html(&self, record_id: i64) -> Result<String, AdminError> {
+        if record_id <= 0 {
+            return Err(AdminError::invalid("检测记录 ID 不合法"));
+        }
+        self.store
+            .load_detection_record_html(record_id)
+            .await
+            .map_err(|error| map_store_error(error, "detection record html"))?
+            .ok_or_else(|| AdminError::not_found("检测记录不存在或没有 HTML 内容"))
     }
 }
 
