@@ -64,6 +64,8 @@ export function useAccountOnboarding(options: {
   const authorizingOAuth = authorizingOAuthAction.loading
   const createForm = ref(emptyAccountCreateForm())
   const tokenRows = ref<TokenImportRow[]>([])
+  const tokenImportNotice = ref('')
+  let tokenRowSequence = 0
 
   const showCreateModal = computed({
     get: () => createModalOpen.value,
@@ -72,6 +74,9 @@ export function useAccountOnboarding(options: {
       if (!value) {
         reauthorizingAccount.value = null
         createForm.value = emptyAccountCreateForm()
+        tokenRows.value = []
+        tokenImportNotice.value = ''
+        tokenRowSequence = 0
       }
     },
   })
@@ -183,6 +188,9 @@ export function useAccountOnboarding(options: {
   function openCreateAccount() {
     reauthorizingAccount.value = null
     createForm.value = emptyAccountCreateForm()
+    tokenRows.value = []
+    tokenImportNotice.value = ''
+    tokenRowSequence = 0
     showCreateModal.value = true
   }
 
@@ -250,6 +258,59 @@ export function useAccountOnboarding(options: {
     }
     showCreateModal.value = false
     return `已导入 ${summary.success} 个账号`
+  }
+
+  function appendTokenText(value: string) {
+    if (createForm.value.provider !== 'openai' || createForm.value.mode !== 'auto')
+      return
+    const entries = parseOpenAiTokenEntries(value)
+    if (entries.length === 0)
+      return
+
+    const available = MAX_TOKEN_IMPORT_COUNT - tokenRows.value.length
+    if (available <= 0) {
+      tokenImportNotice.value = `最多保留 ${MAX_TOKEN_IMPORT_COUNT} 行，未加入本次内容`
+      return
+    }
+
+    const accepted = entries.slice(0, available)
+    if (accepted.length < entries.length) {
+      tokenImportNotice.value = `最多保留 ${MAX_TOKEN_IMPORT_COUNT} 行，本次仅加入 ${accepted.length} 行`
+    }
+    else {
+      tokenImportNotice.value = ''
+    }
+
+    const startIndex = tokenRows.value.length
+    tokenRows.value.push(...accepted.map((item, offset) => createTokenImportRow(
+      item,
+      startIndex + offset + 1,
+      `token-row-${++tokenRowSequence}`,
+    )))
+    reconcileTokenRows()
+  }
+
+  function reconcileTokenRows() {
+    const seen = new Map<string, number>()
+    tokenRows.value.forEach((row, offset) => {
+      row.index = offset + 1
+      if (!row.credential)
+        return
+      const prior = seen.get(row.credential)
+      if (prior !== undefined) {
+        if (row.status !== 'success' && row.status !== 'importing') {
+          row.status = 'duplicate'
+          row.error = `重复（第 ${prior} 行）`
+        }
+      }
+      else {
+        seen.set(row.credential, row.index)
+        if (row.status === 'duplicate') {
+          row.status = 'pending'
+          row.error = ''
+        }
+      }
+    })
   }
 
   async function runTokenImport(rows: TokenImportRow[]) {
@@ -385,6 +446,9 @@ export function useAccountOnboarding(options: {
   watch(
     () => createForm.value.provider,
     () => {
+      tokenRows.value = []
+      tokenImportNotice.value = ''
+      tokenRowSequence = 0
       createForm.value = {
         ...createForm.value,
         mode: createForm.value.provider === 'batch' ? 'json' : 'oauth',
@@ -398,9 +462,15 @@ export function useAccountOnboarding(options: {
   )
 
   watch(
-    () => createForm.value.mode === 'auto' ? createForm.value.importTexts.auto : '',
-    (value) => { tokenRows.value = parseOpenAiTokenRows(value) },
-    { immediate: true, flush: 'sync' },
+    () => createForm.value.mode,
+    (mode) => {
+      if (mode !== 'auto') {
+        tokenRows.value = []
+        tokenImportNotice.value = ''
+        tokenRowSequence = 0
+      }
+    },
+    { flush: 'sync' },
   )
 
   watch(
@@ -423,6 +493,8 @@ export function useAccountOnboarding(options: {
     authorizingOAuth,
     createForm,
     tokenRows,
+    tokenImportNotice,
+    appendTokenText,
     handleCreate,
     handleAuthorizeOAuth,
     openCreateAccount,
@@ -439,22 +511,7 @@ export function useAccountOnboarding(options: {
     },
     removeTokenRow: (id: string) => {
       tokenRows.value = tokenRows.value.filter(row => row.id !== id)
-      const seen = new Set<string>()
-      tokenRows.value.forEach((row) => {
-        if (!row.credential)
-          return
-        if (seen.has(row.credential)) {
-          row.status = 'duplicate'
-          row.error = '重复凭据'
-        }
-        else {
-          seen.add(row.credential)
-          if (row.status === 'duplicate') {
-            row.status = 'pending'
-            row.error = ''
-          }
-        }
-      })
+      reconcileTokenRows()
     },
     setUnknownKind: (kind: TokenImportKind) => {
       tokenRows.value.forEach((row) => {
@@ -507,32 +564,51 @@ export function maskToken(value: string) {
 }
 
 export function parseOpenAiTokenRows(value: string): TokenImportRow[] {
+  return parseOpenAiTokenEntries(value)
+    .slice(0, MAX_TOKEN_IMPORT_COUNT)
+    .map((item, index) => createTokenImportRow(item, index + 1, `token-row-${index + 1}`))
+    .map((row, _index, rows) => {
+      const prior = rows.find(candidate => candidate.credential && candidate.credential === row.credential && candidate.index < row.index)
+      if (prior) {
+        row.status = 'duplicate'
+        row.error = `重复（第 ${prior.index} 行）`
+      }
+      return row
+    })
+}
+
+function parseOpenAiTokenEntries(value: string): Array<{ raw: string, value: unknown }> {
   const trimmed = value.trim()
   if (!trimmed)
     return []
   const parsed = parseJsonEntries(trimmed)
-  const entries = parsed.length > 0 ? parsed : value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(raw => ({ raw, value: raw }))
-  const rows: TokenImportRow[] = []
-  entries.slice(0, MAX_TOKEN_IMPORT_COUNT).forEach((item, index) => {
-    const obj = isRecord(item.value) ? item.value : null
-    const credential = obj ? credentialFromObject(obj) : String(item.value)
-    const kind = obj ? credentialKind(obj) : tokenKind(credential)
-    rows.push({ id: `${index}-${credential || item.raw}`, index: index + 1, raw: item.raw, credential, kind, status: 'pending', result: '', error: '', retryAttempt: 0, entry: obj || (credential && (kind === 'at' || kind === 'rt') ? { [kind === 'rt' ? 'refreshToken' : 'accessToken']: credential } : null) })
-  })
-  const seen = new Map<string, number>()
-  rows.forEach((row) => {
-    if (!row.credential)
-      return
-    const prior = seen.get(row.credential)
-    if (prior !== undefined) {
-      row.status = 'duplicate'
-      row.error = `重复（第 ${prior} 行）`
-    }
-    else {
-      seen.set(row.credential, row.index)
-    }
-  })
-  return rows
+  return parsed.length > 0
+    ? parsed
+    : value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(raw => ({ raw, value: raw }))
+}
+
+function createTokenImportRow(
+  item: { raw: string, value: unknown },
+  index: number,
+  id: string,
+): TokenImportRow {
+  const obj = isRecord(item.value) ? item.value : null
+  const credential = obj ? credentialFromObject(obj) : String(item.value)
+  const kind = obj ? credentialKind(obj) : tokenKind(credential)
+  return {
+    id,
+    index,
+    raw: item.raw,
+    credential,
+    kind,
+    status: 'pending',
+    result: '',
+    error: '',
+    retryAttempt: 0,
+    entry: obj || (credential && (kind === 'at' || kind === 'rt')
+      ? { [kind === 'rt' ? 'refreshToken' : 'accessToken']: credential }
+      : null),
+  }
 }
 
 function parseJsonEntries(value: string): Array<{ raw: string, value: unknown }> {

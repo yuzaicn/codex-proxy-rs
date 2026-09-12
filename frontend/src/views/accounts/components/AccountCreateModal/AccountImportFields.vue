@@ -13,9 +13,12 @@ const props = withDefaults(defineProps<{
   placeholder: string
   uploadable: boolean
   disabled: boolean
+  autoMode?: boolean
   rows?: TokenImportRow[]
-}>(), { rows: undefined })
+  notice?: string
+}>(), { autoMode: false, rows: undefined, notice: '' })
 const emit = defineEmits<{
+  appendText: [text: string]
   retryRow: [id: string]
   retryFailed: []
   copyFailed: []
@@ -24,6 +27,7 @@ const emit = defineEmits<{
   setUnknownKind: [kind: TokenImportKind]
 }>()
 const text = defineModel<string>({ required: true })
+const draftText = ref('')
 const summary = computed(() => props.rows ? tokenImportSummary(props.rows) : undefined)
 const fileError = ref('')
 const { open: openFile, onChange } = useFileDialog({ accept: 'application/json,.json', multiple: false, reset: true })
@@ -43,7 +47,10 @@ onChange(async (files) => {
     const contents = await file.text()
     if (version !== readVersion)
       return
-    text.value = contents
+    if (props.autoMode)
+      emit('appendText', contents)
+    else
+      text.value = contents
   }
   catch {
     if (version === readVersion)
@@ -52,9 +59,28 @@ onChange(async (files) => {
 })
 
 function updateText(value: string) {
-  text.value = value
+  if (props.autoMode)
+    draftText.value = value
+  else
+    text.value = value
   readVersion += 1
   fileError.value = ''
+}
+
+function handlePaste(event: ClipboardEvent) {
+  if (!props.autoMode)
+    return
+  event.preventDefault()
+  const value = event.clipboardData?.getData('text') || ''
+  if (value)
+    emit('appendText', value)
+}
+
+function commitDraft() {
+  if (!props.autoMode || !draftText.value.trim())
+    return
+  emit('appendText', draftText.value)
+  draftText.value = ''
 }
 
 function updateKind(row: TokenImportRow, event: Event) {
@@ -74,13 +100,22 @@ function updateKind(row: TokenImportRow, event: Event) {
       </BaseButton>
     </template>
     <BaseTextarea
-      :model-value="text"
+      :model-value="autoMode ? draftText : text"
       :aria-label="label"
       :rows="9"
       :placeholder="placeholder"
       :disabled="disabled"
       @update:model-value="updateText"
+      @paste="handlePaste"
+      @keydown.enter.exact.prevent="commitDraft"
+      @blur="commitDraft"
     />
+    <p v-if="autoMode" class="mt-1.5 text-xs text-cp-text-secondary">
+      粘贴会直接识别并清空输入框；手输内容可按 Enter 或离开输入框加入列表。
+    </p>
+    <p v-if="notice" class="mt-1.5 text-xs text-cp-error" role="alert">
+      {{ notice }}
+    </p>
     <template v-if="rows">
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-cp-border bg-cp-bg-muted px-3 py-2 text-xs text-cp-text-secondary">
         <span v-if="summary">待导入 {{ summary.pending }} · 成功 {{ summary.success }} · 失败 {{ summary.failed }} · 还需要你处理 {{ summary.actionNeeded }} 行</span>
