@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use gateway_core::account::{
@@ -344,6 +344,10 @@ pub enum CodexCredentialAdminError {
     AccountBanned { message: Option<String> },
     #[error("Codex refresh service is unavailable")]
     RefreshUnavailable,
+    #[error("Codex refresh endpoint is rate limited")]
+    RefreshRateLimited { retry_after: Option<Duration> },
+    #[error("Codex refresh endpoint is unavailable")]
+    RefreshUpstreamUnavailable,
     #[error("Codex refresh send state is ambiguous")]
     RefreshAmbiguous { message: Option<String> },
 }
@@ -361,7 +365,9 @@ impl CodexCredentialAdminError {
             | Self::NotFound
             | Self::MissingRefreshToken
             | Self::RefreshLeaseUnavailable
-            | Self::RefreshUnavailable => None,
+            | Self::RefreshUnavailable
+            | Self::RefreshRateLimited { .. }
+            | Self::RefreshUpstreamUnavailable => None,
         }
     }
 }
@@ -955,6 +961,7 @@ impl CodexCredentialAdminService {
             .refresher
             .refresh_with_proxy(&refresh_token, proxy)
             .await
+            .inspect_err(|error| log_import_refresh_failure(account_id, error))
             .map_err(map_refresh_failure)?;
         let access_token = tokens
             .access_token
@@ -1027,10 +1034,28 @@ fn map_refresh_failure(error: RefreshFailure) -> CodexCredentialAdminError {
             CodexCredentialAdminError::AccountBanned { message }
         }
         RefreshFailure::RetryableTransport { .. } => CodexCredentialAdminError::RefreshUnavailable,
+        RefreshFailure::UpstreamRateLimited { retry_after, .. } => {
+            CodexCredentialAdminError::RefreshRateLimited { retry_after }
+        }
+        RefreshFailure::UpstreamUnavailable { .. } => {
+            CodexCredentialAdminError::RefreshUpstreamUnavailable
+        }
         RefreshFailure::Transport { message, .. } => {
             CodexCredentialAdminError::RefreshAmbiguous { message }
         }
     }
+}
+
+fn log_import_refresh_failure(account_id: &ProviderAccountId, error: &RefreshFailure) {
+    let upstream = error.upstream();
+    tracing::warn!(
+        account_id = %account_id,
+        failure_class = error.classification(),
+        upstream_status = ?upstream.map(super::token_client::RefreshUpstreamFailure::status),
+        upstream_code = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::code),
+        upstream_type = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::error_type),
+        "OpenAI OAuth import refresh failed"
+    );
 }
 
 fn log_manual_refresh_failure(account_id: &ProviderAccountId, error: &RefreshFailure) {

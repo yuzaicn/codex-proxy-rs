@@ -1365,6 +1365,10 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
     use crate::credential::token_client::PersonalAccessTokenError;
     use CodexCredentialAdminError as Error;
     let upstream_message = error.upstream_message().map(ToOwned::to_owned);
+    let retry_after = match &error {
+        Error::RefreshRateLimited { retry_after } => *retry_after,
+        _ => None,
+    };
     let public_message = match &error {
         Error::PersonalAccessToken(error) => Some(match error {
             PersonalAccessTokenError::InvalidToken => {
@@ -1378,6 +1382,8 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
                 "OpenAI 返回的 Codex PAT 身份资料不完整或格式无效，请稍后重试"
             }
         }),
+        Error::RefreshRateLimited { .. } => Some("上游限流，请稍后重试"),
+        Error::RefreshUpstreamUnavailable => Some("上游服务暂不可用，请稍后重试"),
         _ => None,
     };
     let kind = match error {
@@ -1392,13 +1398,15 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
         Error::NotFound => ProviderAdminErrorKind::NotFound,
         Error::RefreshLeaseUnavailable => ProviderAdminErrorKind::Conflict,
         Error::RefreshAmbiguous { .. } => ProviderAdminErrorKind::Ambiguous,
+        Error::RefreshRateLimited { .. } => ProviderAdminErrorKind::RateLimited,
+        Error::RefreshUpstreamUnavailable => ProviderAdminErrorKind::UpstreamUnavailable,
         Error::PersonalAccessToken(PersonalAccessTokenError::InvalidResponse) => {
             ProviderAdminErrorKind::BadGateway
         }
         Error::PersonalAccessToken(PersonalAccessTokenError::Unavailable)
         | Error::RefreshUnavailable => ProviderAdminErrorKind::Unavailable,
     };
-    let error = provider_admin_error(kind);
+    let error = provider_admin_error(kind).with_retry_after(retry_after);
     let error = match public_message {
         Some(message) => error.with_public_message(message),
         None => error,
@@ -1422,6 +1430,8 @@ const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'sta
         CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
         CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
         CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
+        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
+        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
         CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }
@@ -1433,6 +1443,8 @@ const fn provider_admin_error_code(kind: ProviderAdminErrorKind) -> &'static str
         ProviderAdminErrorKind::NotFound => "not_found",
         ProviderAdminErrorKind::Conflict => "conflict",
         ProviderAdminErrorKind::Ambiguous => "ambiguous",
+        ProviderAdminErrorKind::RateLimited => "rate_limited",
+        ProviderAdminErrorKind::UpstreamUnavailable => "upstream_unavailable",
         ProviderAdminErrorKind::Unavailable => "unavailable",
         ProviderAdminErrorKind::CredentialRefreshRequired => "credential_refresh_required",
         ProviderAdminErrorKind::BadGateway => "bad_gateway",

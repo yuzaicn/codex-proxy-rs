@@ -36,6 +36,7 @@ mod error {
             AdminErrorCode::NOT_FOUND,
             AdminErrorCode::CONFLICT,
             AdminErrorCode::TOO_MANY_LOGIN_ATTEMPTS,
+            AdminErrorCode::UPSTREAM_RATE_LIMITED,
             AdminErrorCode::SETTINGS_PERSIST,
             AdminErrorCode::INTERNAL,
             AdminErrorCode::USAGE_RECORD_ACCOUNTS,
@@ -48,8 +49,8 @@ mod error {
         assert_eq!(
             actual,
             [
-                40000, 40001, 40002, 40003, 40101, 40102, 40103, 40401, 40901, 42901, 50000, 50001,
-                50002, 50201, 50202, 50301,
+                40000, 40001, 40002, 40003, 40101, 40102, 40103, 40401, 40901, 42901, 42902, 50000,
+                50001, 50002, 50201, 50202, 50301,
             ]
         );
     }
@@ -74,9 +75,11 @@ mod error {
 }
 
 mod response {
+    use std::time::Duration;
+
     use axum::{
         body::to_bytes,
-        http::StatusCode,
+        http::{StatusCode, header::RETRY_AFTER},
         response::{IntoResponse, Response},
     };
     use gateway_api::admin::{AdminEnvelope, AdminError, AdminPageData, AdminResponse, PageMeta};
@@ -167,6 +170,30 @@ mod response {
     }
 
     #[tokio::test]
+    async fn upstream_rate_limit_should_include_structured_and_header_retry_after() {
+        let response =
+            AdminError::upstream_rate_limited(Some(Duration::from_secs(42))).into_response();
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response_json(response).await;
+
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(retry_after.as_deref(), Some("42"));
+        assert_eq!(
+            body,
+            json!({
+                "code": 42902,
+                "message": "上游限流，请稍后重试",
+                "data": {"retryAfterSeconds": 42}
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn admin_error_variants_should_use_stable_http_and_null_data_contract() {
         let cases = [
             (
@@ -215,6 +242,11 @@ mod response {
                 StatusCode::SERVICE_UNAVAILABLE,
                 50301,
             ),
+            (
+                AdminError::upstream_service_unavailable(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                50301,
+            ),
         ];
 
         for (error, expected_status, expected_code) in cases {
@@ -225,6 +257,25 @@ mod response {
             assert_eq!(status, expected_status);
             assert_eq!(body["code"], expected_code);
             assert!(body["message"].is_string());
+            assert!(body["data"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn upstream_unavailable_and_ambiguous_messages_should_remain_distinct() {
+        for (error, expected_message) in [
+            (
+                AdminError::upstream_service_unavailable(),
+                "上游服务暂不可用，请稍后重试",
+            ),
+            (
+                AdminError::upstream_result_unknown(),
+                "上游执行结果未知，请刷新状态后再决定是否重试",
+            ),
+        ] {
+            let response = error.into_response();
+            let body = response_json(response).await;
+            assert_eq!(body["message"], expected_message);
             assert!(body["data"].is_null());
         }
     }

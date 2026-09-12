@@ -69,6 +69,8 @@ fn map_provider_error(
         ProviderAdminErrorKind::NotFound => AdminErrorKind::NotFound,
         ProviderAdminErrorKind::Conflict => AdminErrorKind::Conflict,
         ProviderAdminErrorKind::Ambiguous => AdminErrorKind::UpstreamResultUnknown,
+        ProviderAdminErrorKind::RateLimited => AdminErrorKind::UpstreamRateLimited,
+        ProviderAdminErrorKind::UpstreamUnavailable => AdminErrorKind::UpstreamUnavailable,
         ProviderAdminErrorKind::Unavailable => AdminErrorKind::Unavailable,
         ProviderAdminErrorKind::CredentialRefreshRequired => AdminErrorKind::Unavailable,
         ProviderAdminErrorKind::BadGateway => AdminErrorKind::BadGateway,
@@ -79,13 +81,16 @@ fn map_provider_error(
         AdminErrorKind::Invalid => "Provider 请求不合法",
         AdminErrorKind::NotFound => "Provider 资源不存在",
         AdminErrorKind::Conflict => "Provider 资源状态冲突，请刷新后重试",
+        AdminErrorKind::UpstreamRateLimited => "上游限流，请稍后重试",
         AdminErrorKind::BadGateway => "上游服务请求失败",
         AdminErrorKind::UpstreamResultUnknown => "上游执行结果未知，请刷新状态后再决定是否重试",
+        AdminErrorKind::UpstreamUnavailable => "上游服务暂不可用，请稍后重试",
         AdminErrorKind::Unavailable => "Provider 服务暂不可用",
         AdminErrorKind::Internal => "服务内部错误",
         _ => "Provider 操作失败",
     };
     AdminError::new(kind, error.public_message().unwrap_or(message))
+        .with_retry_after(error.retry_after())
 }
 
 async fn publish_committed(

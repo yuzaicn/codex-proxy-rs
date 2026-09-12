@@ -434,6 +434,8 @@ fn map_provider_registry_error(error: ProviderAdminError) -> AdminError {
         ProviderAdminErrorKind::NotFound => AdminErrorKind::NotFound,
         ProviderAdminErrorKind::Conflict => AdminErrorKind::Conflict,
         ProviderAdminErrorKind::Ambiguous => AdminErrorKind::UpstreamResultUnknown,
+        ProviderAdminErrorKind::RateLimited => AdminErrorKind::UpstreamRateLimited,
+        ProviderAdminErrorKind::UpstreamUnavailable => AdminErrorKind::UpstreamUnavailable,
         ProviderAdminErrorKind::Unavailable | ProviderAdminErrorKind::CredentialRefreshRequired => {
             AdminErrorKind::Unavailable
         }

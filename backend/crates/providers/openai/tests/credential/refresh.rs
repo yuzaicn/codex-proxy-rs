@@ -472,6 +472,57 @@ async fn scheduled_refresh_persists_retryable_message_inside_the_two_hour_window
 }
 
 #[tokio::test]
+async fn scheduled_refresh_defers_rate_limit_and_upstream_unavailable_without_degrading_state() {
+    for (account_id, failure) in [
+        (
+            "acct_retryable_rate_limit",
+            RefreshFailure::UpstreamRateLimited {
+                message: Some("Rate limited.".to_owned()),
+                upstream: None,
+                retry_after: Some(Duration::from_secs(20)),
+            },
+        ),
+        (
+            "acct_retryable_upstream_unavailable",
+            RefreshFailure::UpstreamUnavailable {
+                message: Some("Temporarily unavailable.".to_owned()),
+                upstream: None,
+            },
+        ),
+    ] {
+        let store = Arc::new(MemoryAccountStore::default());
+        let service = CodexCredentialRefreshService::new(
+            store.repository(),
+            Arc::new(FailingRefresher { failure }),
+            Arc::new(RefreshLeases),
+            Arc::new(RefreshCredentialState),
+            MutableRuntimePolicy::new(Duration::from_secs(5 * 60)),
+        );
+        seed_refreshable_account(
+            &store,
+            account_id,
+            SystemTime::now()
+                .checked_sub(Duration::from_secs(30 * 60))
+                .expect("expired access token"),
+            None,
+        )
+        .await;
+
+        let outcomes = service.refresh_due().await.expect("refresh cycle");
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [CodexCredentialRefreshOutcome::Transient {
+                account_id: deferred_account_id,
+            }] if deferred_account_id == account_id
+        ));
+        let account = store.account(account_id).expect("deferred account");
+        assert_eq!(account.credential_state(), CredentialState::Ready);
+        assert!(account.next_refresh_at().is_some());
+    }
+}
+
+#[tokio::test]
 async fn scheduled_refresh_uses_the_final_message_after_the_two_hour_window() {
     let store = Arc::new(MemoryAccountStore::default());
     let policy = MutableRuntimePolicy::new(Duration::from_secs(5 * 60));

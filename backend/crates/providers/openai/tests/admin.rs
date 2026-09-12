@@ -1238,7 +1238,7 @@ async fn openai_rotation_with_refresh_token_overrides_existing_token_and_schedul
 }
 
 #[tokio::test]
-async fn openai_refresh_transport_failure_is_ambiguous() {
+async fn openai_refresh_upstream_5xx_is_unavailable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
@@ -1247,14 +1247,14 @@ async fn openai_refresh_transport_failure_is_ambiguous() {
         .mount(&server)
         .await;
 
-    let account_id = "acct_admin_refresh_ambiguous";
+    let account_id = "acct_admin_refresh_unavailable";
     let store = Arc::new(MemoryAccountStore::default());
     store
         .seed_oauth_credential(ImportCodexOAuthCredential {
             account_id: account_id.to_owned(),
-            name: "admin refresh ambiguous".to_owned(),
-            secret: secret("admin-refresh-ambiguous-access"),
-            verified_account: profile("chatgpt-admin-refresh-ambiguous"),
+            name: "admin refresh unavailable".to_owned(),
+            secret: secret("admin-refresh-unavailable-access"),
+            verified_account: profile("chatgpt-admin-refresh-unavailable"),
             next_refresh_at: Some(Utc::now() + chrono::Duration::minutes(30)),
             enabled: true,
         })
@@ -1276,7 +1276,50 @@ async fn openai_refresh_transport_failure_is_ambiguous() {
         })
         .await
         .expect_err("transport failure must be returned");
-    assert_eq!(error.kind(), ProviderAdminErrorKind::Ambiguous);
+    assert_eq!(error.kind(), ProviderAdminErrorKind::UpstreamUnavailable);
+    assert_eq!(error.public_message(), Some("上游服务暂不可用，请稍后重试"));
+}
+
+#[tokio::test]
+async fn openai_import_rate_limit_preserves_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "33")
+                .set_body_json(serde_json::json!({
+                    "error": {
+                        "message": "Try again later.",
+                        "type": "rate_limit_error",
+                        "code": "rate_limit_exceeded"
+                    }
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut config = valid_config();
+    config.config.auth.oauth_token_endpoint = format!("{}/oauth/token", server.uri());
+    let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
+        .await
+        .expect("OpenAI bundle");
+
+    let error = bundle
+        .admin_provider()
+        .prepare_import(PrepareCredentialImport {
+            default_outbound_proxy: None,
+            document: ProviderDocument::new(OpaqueProviderData::new(Map::from_iter([(
+                "refreshToken".to_owned(),
+                json!("refresh-import-secret"),
+            )]))),
+        })
+        .await
+        .expect_err("upstream rate limit must abort import");
+
+    assert_eq!(error.kind(), ProviderAdminErrorKind::RateLimited);
+    assert_eq!(error.retry_after(), Some(Duration::from_secs(33)));
+    assert_eq!(error.public_message(), Some("上游限流，请稍后重试"));
 }
 
 async fn reset_credit_admin(

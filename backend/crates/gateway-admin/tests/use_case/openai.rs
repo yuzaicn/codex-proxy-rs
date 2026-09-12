@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use gateway_core::account::ProviderAccountId;
 
@@ -121,6 +122,32 @@ async fn openai_import_should_expose_only_explicit_public_errors_without_committ
         assert_eq!(recorded(&events), ["provider.prepare_import"]);
         assert!(store.audit_requests().is_empty());
     }
+}
+
+#[tokio::test]
+async fn openai_import_should_preserve_upstream_rate_limit_retry_after() {
+    use gateway_admin::model::AdminErrorKind;
+
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    provider
+        .fail_next_with_retry_after(ProviderAdminErrorKind::RateLimited, Duration::from_secs(23));
+    let store = FakeAccountStore::new("openai", events);
+    let services = service(provider, store).await;
+
+    let error = services
+        .openai()
+        .import_document(ImportCredentials {
+            outbound_proxy_id: None,
+            settings: None,
+            context: context("import-openai-rate-limited"),
+            document: document(),
+        })
+        .await
+        .expect_err("rate limit must fail before commit");
+
+    assert_eq!(error.kind(), AdminErrorKind::UpstreamRateLimited);
+    assert_eq!(error.retry_after(), Some(Duration::from_secs(23)));
 }
 
 #[tokio::test]
