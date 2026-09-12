@@ -34,11 +34,17 @@ async fn healthz_should_return_no_content_when_all_inputs_are_healthy() {
 }
 
 #[tokio::test]
-async fn healthz_should_ignore_provider_maintenance_worker_failure() {
-    let worker_health = StaticWorkerHealth(vec![worker_snapshot(
-        WorkerKind::QuotaCatalogHealth,
-        WorkerRuntimeState::BackingOff,
-    )]);
+async fn healthz_should_ignore_non_critical_worker_failures() {
+    let worker_health = StaticWorkerHealth(
+        [
+            WorkerKind::OAuthRefresh,
+            WorkerKind::QuotaCatalogHealth,
+            WorkerKind::IntelligenceDetection,
+        ]
+        .into_iter()
+        .map(|kind| worker_snapshot(kind, WorkerRuntimeState::BackingOff))
+        .collect(),
+    );
     let response = crate::openai::api_router_with_worker_health(
         Arc::new(UnusedExecution),
         Arc::new(worker_health),

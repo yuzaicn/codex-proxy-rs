@@ -68,7 +68,9 @@ fn worker_affects_healthz(worker: &WorkerHealthSnapshot) -> bool {
     };
     !matches!(
         id.kind(),
-        WorkerKind::OAuthRefresh | WorkerKind::QuotaCatalogHealth
+        WorkerKind::OAuthRefresh
+            | WorkerKind::QuotaCatalogHealth
+            | WorkerKind::IntelligenceDetection
     )
 }
 
