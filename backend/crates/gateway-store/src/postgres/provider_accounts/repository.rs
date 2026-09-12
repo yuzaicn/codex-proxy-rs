@@ -520,9 +520,17 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                 }
             }
             let mut account_ids = Vec::with_capacity(command.accounts.len());
+            let mut inserted_count = 0;
+            let mut updated_count = 0;
             for account in &command.accounts {
-                account_ids
-                    .push(upsert_provider_account_in_transaction(&mut transaction, account).await?);
+                let (account_id, inserted) =
+                    upsert_provider_account_in_transaction(&mut transaction, account).await?;
+                account_ids.push(account_id);
+                if inserted {
+                    inserted_count += 1;
+                } else {
+                    updated_count += 1;
+                }
             }
             if let Some(settings) = &command.settings {
                 let unique_ids = account_ids
@@ -552,6 +560,8 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
             Ok(ProviderAccountAdminImport {
                 config_revision: revision,
                 account_ids,
+                inserted_count,
+                updated_count,
             })
         }
         .await;
@@ -812,7 +822,7 @@ async fn replace_account_group_assignments_in_transaction(
 pub(crate) async fn upsert_provider_account_in_transaction(
     transaction: &mut Transaction<'_, Postgres>,
     account: &NewProviderAccount,
-) -> StoreResult<String> {
+) -> StoreResult<(String, bool)> {
     account.validate()?;
     let credential_state = if account.upstream_user_id.is_some() {
         account.credential_state
@@ -827,7 +837,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
         ),
         None => None,
     };
-    let imported_id = sqlx::query_scalar::<_, String>(
+    let (imported_id, credential_revision) = sqlx::query_as::<_, (String, i64)>(
         "insert into provider_accounts (
            outbound_proxy_url, outbound_proxy_id, id, provider_kind, name, email, upstream_user_id,
            upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
@@ -866,7 +876,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            last_error_reason = null,
            last_error_message = null,
            updated_at = greatest(now(), excluded.credential_observed_at)
-         returning id",
+         returning id, credential_revision",
     )
     .bind(&account.id)
     .bind(&account.provider_kind)
@@ -914,7 +924,7 @@ pub(crate) async fn upsert_provider_account_in_transaction(
         id: account.id.clone(),
         kind: ConflictKind::InvalidTransition,
     })?;
-    Ok(imported_id)
+    Ok((imported_id, credential_revision == 1))
 }
 
 pub(crate) async fn rotate_provider_account_in_transaction(

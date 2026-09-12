@@ -28,6 +28,7 @@ use gateway_admin::model::{
         AccountDirectoryItem, AccountDirectoryPage, AccountExportBundle, AccountRefreshResult,
         AccountUsagePeriod, AuthorizationStarted, CompleteAuthorization,
         ConsumeProviderResetCredit, CredentialDeletion, CredentialDeletionResult,
+        CredentialImportFailureKind,
         CredentialImportResult, CredentialMutation, CredentialMutationResult, ImportCredentials,
         ProviderDocument, ProviderModels, ProviderProfileActivityInsights, ProviderProfileAvatar,
         ProviderProfileDailyUsage, ProviderProfileInvocation, ProviderProfileStatistics,

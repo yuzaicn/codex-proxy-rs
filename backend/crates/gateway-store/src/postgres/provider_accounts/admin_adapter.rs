@@ -218,9 +218,13 @@ impl PgAdminAccountStore {
         action: &str,
         outbound_proxy: Option<gateway_admin::model::proxies::ImportProxyBinding>,
     ) -> AdminStoreResult<CredentialImportResult> {
-        let provider_kind = prepared.provider_kind.as_str().to_owned();
-        let accounts = prepared
-            .credentials
+        let PreparedCredentialImport {
+            provider_kind,
+            credentials,
+            failures,
+        } = prepared;
+        let provider_kind = provider_kind.as_str().to_owned();
+        let accounts = credentials
             .into_iter()
             .map(prepared_account)
             .collect::<StoreResult<Vec<_>>>()
@@ -263,6 +267,9 @@ impl PgAdminAccountStore {
                         "provider account import returned an invalid account ID",
                     )
                 })?,
+            inserted_count: imported.inserted_count,
+            updated_count: imported.updated_count,
+            failures,
         })
     }
 
@@ -563,11 +570,15 @@ impl AccountStore for PgAdminAccountStore {
                 let CredentialImportResult {
                     config_revision,
                     credential_ids,
+                    inserted_count: _,
+                    updated_count: _,
+                    failures: _,
                 } = self
                     .commit_prepared_import(
                         PreparedCredentialImport {
                             provider_kind: credential.provider_kind.clone(),
                             credentials: vec![credential],
+                            failures: Vec::new(),
                         },
                         command.settings,
                         context,

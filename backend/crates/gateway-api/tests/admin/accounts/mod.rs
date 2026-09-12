@@ -660,12 +660,18 @@ mod actions {
         let response = AccountImportData::from_result(CredentialImportResult {
             config_revision: Revision::new(8).expect("revision"),
             credential_ids: vec![ProviderAccountId::new("acct_imported").expect("account ID")],
+            inserted_count: 1,
+            updated_count: 0,
+            failures: Vec::new(),
         });
         assert_eq!(
             serde_json::to_value(response).expect("serialize account import"),
             json!({
                 "importedCount": 1,
-                "accountIds": ["acct_imported"]
+                "accountIds": ["acct_imported"],
+                "insertedCount": 1,
+                "updatedCount": 0,
+                "failures": []
             })
         );
     }

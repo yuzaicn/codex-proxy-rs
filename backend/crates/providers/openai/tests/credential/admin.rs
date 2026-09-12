@@ -146,6 +146,27 @@ async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or
     assert!(!serialized_event.contains(response_body_marker));
 }
 
+struct MixedRefresher;
+
+#[async_trait]
+impl TokenRefresher for MixedRefresher {
+    async fn refresh(&self, refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
+        if refresh_token == "bad" {
+            return Err(RefreshFailure::InvalidGrant {
+                message: Some("upstream detail must not escape".to_owned()),
+                upstream: None,
+            });
+        }
+        Ok(TokenPair {
+            access_token: Some(test_jwt(serde_json::json!({
+                "https://api.openai.com/auth": {"chatgpt_user_id": refresh_token}
+            }))),
+            refresh_token: None,
+            id_token: None,
+        })
+    }
+}
+
 #[tokio::test]
 async fn sub2api_import_resolves_distinct_proxy_bindings_and_encodes_credentials() {
     let service = CodexCredentialAdminService::new(
@@ -266,6 +287,29 @@ impl TokenRefresher for UnusedRefresher {
     async fn refresh(&self, _refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
         panic!("a direct access-token import must not refresh its refresh token")
     }
+}
+
+#[tokio::test]
+async fn oauth_import_collects_refresh_failures_and_keeps_successes() {
+    let service = CodexCredentialAdminService::new(
+        Arc::new(MixedRefresher),
+        Arc::new(TestLeaseCoordinator::default()),
+        runtime_policy(),
+    );
+    let prepared = service
+        .prepare_import_document(serde_json::json!({
+            "accounts": [{"refreshToken": "good"}, {"refreshToken": "bad"}, {"refreshToken": "good-2"}]
+        }))
+        .await
+        .expect("batch preparation should continue after one failed refresh");
+    assert_eq!(prepared.accounts().len(), 2);
+    assert_eq!(prepared.failures().len(), 1);
+    assert_eq!(prepared.failures()[0].index, 1);
+    assert_eq!(
+        prepared.failures()[0].kind,
+        gateway_admin::model::provider_credentials::CredentialImportFailureKind::InvalidCredential
+    );
+    assert!(!format!("{prepared:?}").contains("upstream detail"));
 }
 
 #[tokio::test]

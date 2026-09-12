@@ -309,6 +309,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
                 log_import_failure("prepare_document", credential_admin_error_code(error));
             })
             .map_err(map_credential_admin_error)?;
+        let failures = prepared.failures().to_vec();
         let observed_at = Utc::now();
         let mut credentials = Vec::with_capacity(prepared.accounts().len());
         for account in prepared.into_accounts() {
@@ -326,6 +327,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
         Ok(PreparedCredentialImport {
             provider_kind: self.provider_kind.clone(),
             credentials,
+            failures,
         })
     }
 

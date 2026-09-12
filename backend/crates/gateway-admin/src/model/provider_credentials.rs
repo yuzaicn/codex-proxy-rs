@@ -79,6 +79,23 @@ impl fmt::Debug for ImportCredentials {
 pub struct CredentialImportResult {
     pub config_revision: Revision,
     pub credential_ids: Vec<ProviderAccountId>,
+    pub inserted_count: usize,
+    pub updated_count: usize,
+    pub failures: Vec<CredentialImportFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialImportFailureKind {
+    InvalidCredential,
+    Unavailable,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialImportFailure {
+    /// Zero-based position in the submitted document.
+    pub index: usize,
+    pub kind: CredentialImportFailureKind,
 }
 
 /// Provider 解析导入文档时只接收不透明文档，不接触 revision 或审计上下文。
@@ -122,6 +139,7 @@ pub struct PreparedCredentialCreate {
 pub struct PreparedCredentialImport {
     pub provider_kind: ProviderKind,
     pub credentials: Vec<PreparedCredentialCreate>,
+    pub failures: Vec<CredentialImportFailure>,
 }
 
 /// Admin 交给 Store 的导入事务命令。

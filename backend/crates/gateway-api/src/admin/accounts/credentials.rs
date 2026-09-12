@@ -346,18 +346,48 @@ impl RotateAccountRequest {
 pub struct AccountImportData {
     pub imported_count: usize,
     pub account_ids: Vec<String>,
+    pub inserted_count: usize,
+    pub updated_count: usize,
+    pub failures: Vec<AccountImportFailureData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountImportFailureData {
+    /// One-based position in the submitted document for user-facing diagnostics.
+    pub index: usize,
+    pub kind: &'static str,
 }
 
 impl AccountImportData {
     pub fn from_result(result: CredentialImportResult) -> Self {
-        let account_ids = result
-            .credential_ids
+        let CredentialImportResult {
+            credential_ids,
+            inserted_count,
+            updated_count,
+            failures,
+            ..
+        } = result;
+        let account_ids = credential_ids
             .into_iter()
             .map(|account_id| account_id.to_string())
             .collect::<Vec<_>>();
         Self {
             imported_count: account_ids.len(),
             account_ids,
+            inserted_count,
+            updated_count,
+            failures: failures
+                .into_iter()
+                .map(|failure| AccountImportFailureData {
+                    index: failure.index + 1,
+                    kind: match failure.kind {
+                        CredentialImportFailureKind::InvalidCredential => "invalid_credential",
+                        CredentialImportFailureKind::Unavailable => "unavailable",
+                        CredentialImportFailureKind::Ambiguous => "ambiguous",
+                    },
+                })
+                .collect(),
         }
     }
 }

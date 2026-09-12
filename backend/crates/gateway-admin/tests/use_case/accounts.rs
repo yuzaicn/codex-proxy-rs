@@ -336,6 +336,7 @@ impl ProviderAdmin for FakeProviderAdmin {
                     prepared_create_with_id(self.kind.clone(), &account_id, "prepared-import")
                 })
                 .collect(),
+            failures: Vec::new(),
         })
     }
 
@@ -746,14 +747,20 @@ impl AccountStore for FakeAccountStore {
         self.record("store.commit_import");
         self.record_context(context);
         self.require_commit()?;
+        let gateway_admin::model::provider_credentials::PreparedCredentialImport {
+            credentials,
+            failures,
+            ..
+        } = command.prepared;
         Ok(CredentialImportResult {
             config_revision: revision(2),
-            credential_ids: command
-                .prepared
-                .credentials
+            credential_ids: credentials
                 .into_iter()
                 .map(|credential| credential.account_id)
                 .collect(),
+            inserted_count: 0,
+            updated_count: 0,
+            failures,
         })
     }
 

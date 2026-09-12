@@ -260,6 +260,8 @@ pub struct ImportProviderAccounts {
 pub struct ProviderAccountAdminImport {
     pub config_revision: Revision,
     pub account_ids: Vec<String>,
+    pub inserted_count: usize,
+    pub updated_count: usize,
 }
 
 impl fmt::Debug for ImportProviderAccounts {

@@ -533,6 +533,7 @@ impl ProviderAdmin for XaiAdminProvider {
         Ok(PreparedCredentialImport {
             provider_kind: self.provider_kind.clone(),
             credentials,
+            failures: Vec::new(),
         })
     }
 
