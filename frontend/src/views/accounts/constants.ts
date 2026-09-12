@@ -17,6 +17,7 @@ const quotaGroupOrder = new Map([
   ['other', 2],
 ])
 
+// 账号表列较多，逐列给出压缩下限，保证 1440px 视口（约 1100px 容器）内不出横向滚动。
 export const accountColumns = defineTableColumns<AccountRow>([
   { key: 'expander', kind: 'expander' },
   { key: 'selection', kind: 'selection' },
@@ -25,6 +26,7 @@ export const accountColumns = defineTableColumns<AccountRow>([
     label: '账号',
     kind: 'identity',
     size: '3xl',
+    minWidth: 128,
     sortable: 'email',
   },
   {
@@ -32,24 +34,37 @@ export const accountColumns = defineTableColumns<AccountRow>([
     label: '平台/类型',
     kind: 'meta',
     size: 'md',
+    minWidth: 80,
     align: 'center',
     format: value => accountProviderLabel(typeof value === 'string' ? value : null),
   },
-  { key: 'status', label: '状态', kind: 'status', align: 'left', sortable: true },
+  { key: 'status', label: '状态', kind: 'status', minWidth: 92, align: 'left', sortable: true },
   {
     key: 'schedulingSuspended',
     label: '调度',
     kind: 'custom',
     size: 'sm',
+    minWidth: 72,
     align: 'center',
   },
-  { key: 'planType', label: '套餐', kind: 'status', sortable: true },
-  { key: 'usage', label: '用量', kind: 'custom', size: '2xl', sortable: true },
-  { key: 'groups', label: '账号分组', kind: 'status' },
+  { key: 'planType', label: '套餐', kind: 'status', minWidth: 72, sortable: true },
+  {
+    // 后台观测的重置卡余量；排序能力等 GUCH-182 的 DataTable 统一升级，本列不自建排序。
+    key: 'resetCredits',
+    label: '重置卡',
+    kind: 'custom',
+    size: 'sm',
+    minWidth: 72,
+    align: 'center',
+  },
+  { key: 'usage', label: '用量', kind: 'custom', size: '2xl', minWidth: 132, sortable: true },
+  { key: 'groups', label: '账号分组', kind: 'status', minWidth: 72 },
   {
     key: 'lastUsedAt',
     label: '最后使用',
     kind: 'datetime',
+    size: 'md',
+    minWidth: 80,
     sortable: true,
     emptyText: '',
   },
@@ -57,11 +72,13 @@ export const accountColumns = defineTableColumns<AccountRow>([
     key: 'accessTokenExpiresAtDisplay',
     label: '过期时间',
     kind: 'datetime',
+    size: 'lg',
+    minWidth: 92,
     sortable: 'expiresAt',
     format: value => optionalAccountCell(value),
     emptyText: '',
   },
-  { key: 'actions', label: '操作', kind: 'actions', size: 'lg' },
+  { key: 'actions', label: '操作', kind: 'actions', size: 'lg', minWidth: 116 },
 ])
 
 export const statusLabels: Record<AccountStatus, string> = {

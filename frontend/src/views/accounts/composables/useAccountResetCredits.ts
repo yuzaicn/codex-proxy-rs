@@ -29,6 +29,8 @@ const snapshotsByAccountId = new Map<string, ResetCreditsSnapshot>()
 export function useAccountResetCredits(options: {
   accountId: () => string
   onAccountUpdated: (account: Account) => void
+  /** 会话内拿到新的可用张数时回调（手动查询或消费扣减），供调用方同步列表列上的观测值。 */
+  onCreditsObserved?: (accountId: string, availableCount: number) => void
 }) {
   const credits = shallowRef<AccountResetCredit[]>([])
   const availableCount = shallowRef(0)
@@ -71,6 +73,7 @@ export function useAccountResetCredits(options: {
 
   function applySnapshot(accountId: string, snapshot: ResetCreditsSnapshot) {
     snapshotsByAccountId.set(accountId, snapshot)
+    options.onCreditsObserved?.(accountId, snapshot.availableCount)
     if (accountId !== options.accountId())
       return
     credits.value = snapshot.credits

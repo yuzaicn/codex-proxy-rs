@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Account, AccountResetCredit } from '@/api'
+import type { Account, AccountResetCredit, AccountResetCreditsObservation } from '@/api'
 import { AlertTriangle, RefreshCw, TicketCheck } from '@lucide/vue'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
@@ -22,6 +22,9 @@ const emit = defineEmits<{
 
 dayjs.extend(utc)
 
+// 会话内最新一次观测（手动查询/消费扣减产生），用于把新数字同步到账号列表的重置卡列。
+const sessionObservation = shallowRef<AccountResetCreditsObservation | null>(null)
+
 const {
   availableCredits,
   availableCount,
@@ -40,7 +43,35 @@ const {
   confirmConsume,
 } = useAccountResetCredits({
   accountId: () => props.account.id,
-  onAccountUpdated: account => emit('accountUpdated', account),
+  onAccountUpdated: account => emit('accountUpdated', withSessionObservation(account)),
+  onCreditsObserved: handleCreditsObserved,
+})
+
+function handleCreditsObserved(accountId: string, count: number) {
+  if (accountId !== props.account.id)
+    return
+  const observation: AccountResetCreditsObservation = {
+    availableCount: count,
+    observedAt: new Date().toISOString(),
+  }
+  sessionObservation.value = observation
+  emit('accountUpdated', { ...props.account, resetCredits: observation })
+}
+
+// 后端回传的账号若带着更旧的观测值，保留会话内的最新值，避免列上的数字被倒退。
+function withSessionObservation(account: Account): Account {
+  const session = sessionObservation.value
+  if (!session)
+    return account
+  const serverObservedAt = account.resetCredits ? Date.parse(account.resetCredits.observedAt) : Number.NaN
+  const sessionObservedAt = Date.parse(session.observedAt)
+  if (Number.isNaN(sessionObservedAt) || serverObservedAt >= sessionObservedAt)
+    return account
+  return { ...account, resetCredits: session }
+}
+
+watch(() => props.account.id, () => {
+  sessionObservation.value = null
 })
 
 const panelOpen = shallowRef(false)
