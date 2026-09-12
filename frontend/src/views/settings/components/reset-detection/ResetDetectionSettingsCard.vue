@@ -111,7 +111,7 @@ const ACCOUNT_SCOPE_OPTIONS = [
             />
           </div>
           <p class="m-0 pl-6 text-cp-xs leading-[1.4] font-emphasis text-cp-warning-text">
-            开启后会真实消耗账号的主动额度重置卡，消费不可撤销，请确认后再启用。
+            仅对额度耗尽的 OpenAI 账号自动消费；429 限流账号不消费（重置卡不能解除限流冷却）。消费不可撤销，请确认后再启用。
           </p>
         </div>
 
