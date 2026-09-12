@@ -874,6 +874,20 @@ impl DetectionStore for UnusedStore {
     ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionRound>> {
         Err(unavailable("detection rounds"))
     }
+
+    async fn list_detection_targets(
+        &self,
+        _: &gateway_admin::model::detection::DetectionAccountScope,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionTarget>> {
+        Err(unavailable("detection targets"))
+    }
+
+    async fn insert_detection_record(
+        &self,
+        _: gateway_admin::model::detection::NewDetectionRecord,
+    ) -> AdminStoreResult<()> {
+        Err(unavailable("detection records"))
+    }
 }
 
 #[async_trait]

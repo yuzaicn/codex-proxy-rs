@@ -26,8 +26,9 @@ use crate::model::{
         NewClientKey, SetClientKeyEnabled, UpdateClientKey,
     },
     detection::{
-        DetectionConfig, DetectionConfigMutation, DetectionRecord, DetectionRecordQuery,
-        DetectionRound, ReplaceDetectionConfig,
+        DetectionAccountScope, DetectionConfig, DetectionConfigMutation, DetectionRecord,
+        DetectionRecordQuery, DetectionRound, DetectionTarget, NewDetectionRecord,
+        ReplaceDetectionConfig,
     },
     observability::{
         DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
@@ -384,6 +385,15 @@ pub trait DetectionStore: Send + Sync {
 
     /// 读取最近的检测批次聚合，按检测时间倒排。
     async fn list_detection_rounds(&self, limit: u32) -> AdminStoreResult<Vec<DetectionRound>>;
+
+    /// 检测 Worker 按账号范围读取待探测账号及其调度暂停事实。
+    async fn list_detection_targets(
+        &self,
+        scope: &DetectionAccountScope,
+    ) -> AdminStoreResult<Vec<DetectionTarget>>;
+
+    /// 检测 Worker 追加一条检测记录；观测数据不参与配置 revision 与审计。
+    async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()>;
 }
 
 /// Runtime settings 与管理员 API Key 写入。

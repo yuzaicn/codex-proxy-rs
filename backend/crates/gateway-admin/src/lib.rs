@@ -10,7 +10,7 @@ use gateway_core::{
     runtime::SnapshotControl,
     task::{
         DaemonRestartPolicy, WorkerContribution, WorkerId, WorkerKind, WorkerRegistration,
-        WorkerRunnable,
+        WorkerRunnable, WorkerSchedule,
     },
 };
 use secrecy::{ExposeSecret as _, SecretString};
@@ -20,6 +20,7 @@ pub mod backup;
 pub mod model;
 pub mod ports;
 mod use_case;
+pub mod workers;
 
 pub use use_case::{
     account_groups::AccountGroupService, accounts::AccountsService, auth::AuthService,
@@ -60,6 +61,14 @@ const WEAK_INITIAL_PASSWORDS: &[&str] = &[
 ];
 
 const BACKUP_WORKER_OWNER: &str = "backup";
+const DETECTION_WORKER_OWNER: &str = "detection";
+/// 检测 Worker 的固定唤醒间隔；真实轮次节奏由配置里的 `interval_secs` 在任务内部把关。
+const DETECTION_WORKER_TICK: Duration = Duration::from_secs(60);
+const DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
+/// 单副本部署不启用 leader lease；schedule 仍要求合法的 lease 参数占位。
+const DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
+const DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 
 /// 只用于首次幂等创建默认管理员的启动密码。
 #[derive(Clone, Deserialize)]
@@ -336,7 +345,7 @@ pub async fn initialize(
         detection: Arc::new(DefaultDetectionService::new(
             store.detection(),
             snapshot.clone(),
-            registry,
+            registry.clone(),
         )),
         system: Arc::new(DefaultSystemService::new(system)),
         openai: Arc::new(DefaultOpenAiService::new(
@@ -353,7 +362,15 @@ pub async fn initialize(
         )),
         backups,
     };
-    let worker_contributions = backup_worker_contribution(backup_task)?;
+    let detection_task = workers::intelligence_detection::IntelligenceDetectionTask::new(
+        store.detection(),
+        store.accounts(),
+        registry,
+        probe,
+        snapshot,
+    );
+    let mut worker_contributions = backup_worker_contribution(backup_task)?;
+    worker_contributions.extend(detection_worker_contribution(detection_task)?);
     Ok(AdminBundle {
         services,
         worker_contributions,
@@ -376,6 +393,32 @@ fn backup_worker_contribution(
         },
     )
     .map_err(|_| AdminError::internal("备份 Worker 注册信息不合法"))?;
+    Ok(vec![WorkerContribution::Registration(registration)])
+}
+
+/// 降智检测 Worker 注册：单副本无 lease 的周期任务，owner 固定为 `detection`。
+fn detection_worker_contribution(
+    task: workers::intelligence_detection::IntelligenceDetectionTask,
+) -> Result<Vec<WorkerContribution>, AdminError> {
+    let id = WorkerId::try_new(WorkerKind::IntelligenceDetection, DETECTION_WORKER_OWNER)
+        .map_err(|_| AdminError::internal("降智检测 Worker ID 不合法"))?;
+    let schedule = WorkerSchedule::try_new(
+        DETECTION_WORKER_TICK,
+        DETECTION_WORKER_INITIAL_BACKOFF,
+        DETECTION_WORKER_MAXIMUM_BACKOFF,
+        DETECTION_WORKER_UNUSED_LEASE_TTL,
+        DETECTION_WORKER_UNUSED_LEASE_RENEWAL,
+    )
+    .map_err(|_| AdminError::internal("降智检测 Worker 调度参数不合法"))?;
+    let registration = WorkerRegistration::try_new(
+        id,
+        WorkerRunnable::Scheduled {
+            schedule,
+            lease: None,
+            task: Box::new(task),
+        },
+    )
+    .map_err(|_| AdminError::internal("降智检测 Worker 注册信息不合法"))?;
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 

@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use gateway_core::{account::SchedulingSuspensionSource, routing::ProviderKind};
+
 use super::Revision;
 
 /// 降智检测的账号范围。
@@ -86,4 +88,23 @@ pub struct DetectionRound {
     pub checked_at: DateTime<Utc>,
     pub degraded_count: u64,
     pub normal_count: u64,
+}
+
+/// 检测 Worker 视角的一个待探测账号及其当前调度暂停事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectionTarget {
+    pub account_id: String,
+    pub provider_kind: ProviderKind,
+    pub scheduling_suspended: bool,
+    pub scheduling_suspended_by: Option<SchedulingSuspensionSource>,
+}
+
+/// 检测 Worker 写入的一条新检测记录；`checked_at` 由存储层落库时间决定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewDetectionRecord {
+    pub detection_round_id: Uuid,
+    pub account_id: String,
+    pub degraded: bool,
+    pub html_content: Option<String>,
+    pub matched_phrases: Vec<String>,
 }

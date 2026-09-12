@@ -38,8 +38,9 @@ use gateway_admin::{
             NewClientKey, SetClientKeyEnabled, UpdateClientKey,
         },
         detection::{
-            DetectionConfig, DetectionConfigMutation, DetectionRecord, DetectionRecordQuery,
-            DetectionRound, ReplaceDetectionConfig,
+            DetectionAccountScope, DetectionConfig, DetectionConfigMutation, DetectionRecord,
+            DetectionRecordQuery, DetectionRound, DetectionTarget, NewDetectionRecord,
+            ReplaceDetectionConfig,
         },
         observability::{
             DashboardDesktopRelease, DashboardObservation, DashboardWireAttribute,
@@ -655,6 +656,17 @@ impl DetectionStore for UnavailableStore {
 
     async fn list_detection_rounds(&self, _: u32) -> AdminStoreResult<Vec<DetectionRound>> {
         Err(unavailable("detection rounds"))
+    }
+
+    async fn list_detection_targets(
+        &self,
+        _: &DetectionAccountScope,
+    ) -> AdminStoreResult<Vec<DetectionTarget>> {
+        Err(unavailable("detection targets"))
+    }
+
+    async fn insert_detection_record(&self, _: NewDetectionRecord) -> AdminStoreResult<()> {
+        Err(unavailable("detection records"))
     }
 }
 

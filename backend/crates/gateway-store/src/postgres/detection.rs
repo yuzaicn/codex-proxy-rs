@@ -10,11 +10,13 @@ use gateway_admin::{
         MutationContext,
         detection::{
             DetectionAccountScope, DetectionConfig, DetectionConfigMutation, DetectionRecord,
-            DetectionRecordQuery, DetectionRound, ReplaceDetectionConfig,
+            DetectionRecordQuery, DetectionRound, DetectionTarget, NewDetectionRecord,
+            ReplaceDetectionConfig,
         },
     },
     ports::store::{AdminStoreResult, DetectionStore},
 };
+use gateway_core::{account::SchedulingSuspensionSource, routing::ProviderKind};
 
 use crate::{
     Revision, StoreError, StoreResult, admin_revision, admin_store_error, mutation_audit,
@@ -40,6 +42,7 @@ type RecordRow = (
     bool,
 );
 type RoundRow = (String, DateTime<Utc>, i64, i64);
+type TargetRow = (String, String, bool, Option<String>);
 
 /// 降智检测配置与检测记录的 PostgreSQL adapter。
 #[derive(Clone)]
@@ -187,6 +190,46 @@ impl PgDetectionStore {
         .await
         .map_err(|_| postgres_unavailable("list detection rounds"))
     }
+
+    async fn load_targets(&self, scope: &DetectionAccountScope) -> StoreResult<Vec<TargetRow>> {
+        let rows = match scope {
+            DetectionAccountScope::AllAccounts => {
+                sqlx::query_as::<_, TargetRow>(
+                    "select id, provider_kind, scheduling_suspended, scheduling_suspended_by
+                     from provider_accounts order by id",
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+            DetectionAccountScope::SelectedAccounts { account_ids } => {
+                sqlx::query_as::<_, TargetRow>(
+                    "select id, provider_kind, scheduling_suspended, scheduling_suspended_by
+                     from provider_accounts where id = any($1::text[]) order by id",
+                )
+                .bind(account_ids.as_slice())
+                .fetch_all(&self.pool)
+                .await
+            }
+        };
+        rows.map_err(|_| postgres_unavailable("list detection targets"))
+    }
+
+    async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
+        sqlx::query(
+            "insert into intelligence_detection_records
+             (detection_round_id, account_id, degraded, html_content, matched_phrases)
+             values ($1::uuid, $2, $3, $4, $5)",
+        )
+        .bind(record.detection_round_id.to_string())
+        .bind(&record.account_id)
+        .bind(record.degraded)
+        .bind(record.html_content.as_deref())
+        .bind(record.matched_phrases.as_slice())
+        .execute(&self.pool)
+        .await
+        .map_err(|_| postgres_unavailable("insert detection record"))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -236,6 +279,22 @@ impl DetectionStore for PgDetectionStore {
         self.load_rounds(limit)
             .await
             .and_then(|rows| rows.into_iter().map(detection_round_from_row).collect())
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
+    async fn list_detection_targets(
+        &self,
+        scope: &DetectionAccountScope,
+    ) -> AdminStoreResult<Vec<DetectionTarget>> {
+        self.load_targets(scope)
+            .await
+            .and_then(|rows| rows.into_iter().map(detection_target_from_row).collect())
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
+    async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()> {
+        self.insert_record(&record)
+            .await
             .map_err(|error| admin_store_error(ENTITY, error))
     }
 }
@@ -288,6 +347,24 @@ fn detection_round_from_row(row: RoundRow) -> StoreResult<DetectionRound> {
         degraded_count: u64::try_from(degraded_count)
             .map_err(|_| invalid("negative degraded count"))?,
         normal_count: u64::try_from(normal_count).map_err(|_| invalid("negative normal count"))?,
+    })
+}
+
+fn detection_target_from_row(row: TargetRow) -> StoreResult<DetectionTarget> {
+    let (account_id, provider_kind, scheduling_suspended, scheduling_suspended_by) = row;
+    let scheduling_suspended_by = scheduling_suspended_by
+        .as_deref()
+        .map(|value| {
+            SchedulingSuspensionSource::parse(value)
+                .ok_or_else(|| invalid("unknown scheduling_suspended_by value"))
+        })
+        .transpose()?;
+    Ok(DetectionTarget {
+        account_id,
+        provider_kind: ProviderKind::new(provider_kind)
+            .map_err(|_| invalid("invalid provider kind"))?,
+        scheduling_suspended,
+        scheduling_suspended_by,
     })
 }
 
