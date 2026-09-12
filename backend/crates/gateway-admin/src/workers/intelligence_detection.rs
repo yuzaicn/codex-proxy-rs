@@ -9,10 +9,14 @@
 //! 恢复正常后被解除暂停，人工暂停不受检测结果影响。当前部署为单副本，不需要
 //! Redis leader lease。
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
+use futures::stream::{self, StreamExt};
 use gateway_core::{
     account::{ProviderAccountId, SchedulingSuspensionSource},
     engine::probe::{AccountProbe, AccountProbeRequest},
@@ -38,6 +42,9 @@ use crate::{
 /// 探测固定提示词；降智账号对它的答复会退化为纯文本描述。
 const DETECTION_PROMPT: &str = "创建一个 HTML，内容是 SVG 绘制一个鹈鹕骑自行车的 2D 动画。";
 
+/// 单轮探测允许同时在途的账号数。
+const MAX_CONCURRENT_PROBES: usize = 16;
+
 /// 降智指征关键词；ASCII 大小写不敏感，命中任意一个即判定降智。
 const DEGRADED_PHRASES: &[&str] = &["内嵌 SVG 和 CSS", "inline SVG", "SVG and CSS"];
 
@@ -49,6 +56,17 @@ pub struct IntelligenceDetectionTask {
     probe: Arc<dyn AccountProbe>,
     snapshot: Arc<dyn SnapshotControl>,
     last_round_started_at: Mutex<Option<Instant>>,
+    round_in_progress: AtomicBool,
+}
+
+struct RoundGuard<'a> {
+    in_progress: &'a AtomicBool,
+}
+
+impl Drop for RoundGuard<'_> {
+    fn drop(&mut self) {
+        self.in_progress.store(false, Ordering::Release);
+    }
 }
 
 impl IntelligenceDetectionTask {
@@ -68,6 +86,7 @@ impl IntelligenceDetectionTask {
             probe,
             snapshot,
             last_round_started_at: Mutex::new(None),
+            round_in_progress: AtomicBool::new(false),
         }
     }
 
@@ -87,9 +106,9 @@ impl IntelligenceDetectionTask {
             warn!("降智检测已启用但检测模型为空或不合法，跳过本轮");
             return Ok(());
         };
-        if !self.round_due(&config) {
+        let Some(_round_guard) = self.round_due(&config) else {
             return Ok(());
-        }
+        };
         let targets = self
             .detection
             .list_detection_targets(&config.account_scope)
@@ -105,28 +124,64 @@ impl IntelligenceDetectionTask {
             model = upstream_model.as_str(),
             "降智检测轮次开始"
         );
-        let mut last_committed = None;
-        let mut degraded_count = 0_usize;
-        for target in &targets {
-            if cancellation.is_cancelled() {
-                break;
+        let outcomes = stream::iter(targets.into_iter().map(|target| {
+            let cancellation = cancellation.clone();
+            let upstream_model = upstream_model.clone();
+            async move {
+                if cancellation.is_cancelled() {
+                    return None;
+                }
+                let Ok(account_id) = ProviderAccountId::new(target.account_id.clone()) else {
+                    warn!(account = target.account_id, "账号 ID 不合法，跳过探测");
+                    return None;
+                };
+                let degraded = match self
+                    .probe_and_record(&account_id, &target, &upstream_model, round_id)
+                    .await
+                {
+                    Ok(Some(degraded)) => degraded,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        warn!(
+                            account = target.account_id,
+                            %round_id,
+                            error = error.as_safe_str(),
+                            "写入探测记录失败，跳过该账号"
+                        );
+                        return None;
+                    }
+                };
+                let revision = match self
+                    .reconcile_suspension(&account_id, &target, degraded, round_id)
+                    .await
+                {
+                    Ok(revision) => revision,
+                    Err(error) => {
+                        warn!(
+                            account = target.account_id,
+                            %round_id,
+                            error = error.as_safe_str(),
+                            "更新账号调度状态失败，保留该账号本轮记录"
+                        );
+                        None
+                    }
+                };
+                Some((degraded, revision))
             }
-            let Ok(account_id) = ProviderAccountId::new(target.account_id.clone()) else {
-                warn!(account = target.account_id, "账号 ID 不合法，跳过探测");
-                continue;
-            };
-            let Some(degraded) = self
-                .probe_and_record(&account_id, target, &upstream_model, round_id)
-                .await?
-            else {
+        }))
+        .buffer_unordered(MAX_CONCURRENT_PROBES)
+        .collect::<Vec<_>>()
+        .await;
+        let mut last_committed: Option<Revision> = None;
+        let mut degraded_count = 0_usize;
+        for outcome in outcomes {
+            let Some((degraded, revision)) = outcome else {
                 continue;
             };
             degraded_count += usize::from(degraded);
-            if let Some(revision) = self
-                .reconcile_suspension(&account_id, target, degraded, round_id)
-                .await?
-            {
-                last_committed = Some(revision);
+            if let Some(revision) = revision {
+                last_committed =
+                    Some(last_committed.map_or(revision, |committed| committed.max(revision)));
             }
         }
         if let Some(revision) = last_committed {
@@ -136,18 +191,26 @@ impl IntelligenceDetectionTask {
         Ok(())
     }
 
-    /// 距上一轮开始不足 `interval_secs` 时返回 `false`；到期则记录本轮开始时间。
-    fn round_due(&self, config: &DetectionConfig) -> bool {
+    /// 尝试开始一轮：未到间隔或已有轮次在途时返回 `None`。
+    fn round_due(&self, config: &DetectionConfig) -> Option<RoundGuard<'_>> {
+        if self.round_in_progress.swap(true, Ordering::Acquire) {
+            return None;
+        }
         let interval = Duration::from_secs(u64::from(config.interval_secs.max(1)));
         let mut guard = self
             .last_round_started_at
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         match *guard {
-            Some(started_at) if started_at.elapsed() < interval => false,
+            Some(started_at) if started_at.elapsed() < interval => {
+                self.round_in_progress.store(false, Ordering::Release);
+                None
+            }
             _ => {
                 *guard = Some(Instant::now());
-                true
+                Some(RoundGuard {
+                    in_progress: &self.round_in_progress,
+                })
             }
         }
     }
