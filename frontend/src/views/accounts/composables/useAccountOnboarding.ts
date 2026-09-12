@@ -295,11 +295,13 @@ export function useAccountOnboarding(options: {
     const row = tokenRows.value.find(item => item.id === id)
     if (!row || !['failed', 'needs_action'].includes(row.status) || creatingAccount.value)
       return
-    await runTokenImport([row])
-    if (tokenRows.value.find(item => item.id === id)?.status === 'success') {
-      await options.reload()
-      toast.success('凭据已导入')
-    }
+    await creatingAccountAction.run(async () => {
+      await runTokenImport([row])
+      if (row.status === 'success') {
+        await options.reload()
+        toast.success('凭据已导入')
+      }
+    }, { errorText: '重试失败' })
   }
 
   async function retryFailedImports() {
@@ -528,12 +530,7 @@ function parseJsonEntries(value: string): Array<{ raw: string, value: unknown }>
   for (const line of value.split(/\r?\n/).map(item => item.trim()).filter(Boolean)) {
     const startsJson = line.startsWith('{') || line.startsWith('[')
     if (!group && !startsJson) {
-      try {
-        entries.push({ raw: line, value: JSON.parse(line) })
-      }
-      catch {
-        continue
-      }
+      entries.push({ raw: line, value: line })
       continue
     }
     group = group ? `${group}\n${line}` : line

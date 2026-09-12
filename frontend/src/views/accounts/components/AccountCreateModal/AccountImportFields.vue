@@ -141,7 +141,7 @@ function updateKind(row: TokenImportRow, event: Event) {
                   </option>
                 </select>
               </td>
-              <td class="max-w-48 truncate px-3 py-2 font-mono text-cp-text" :title="row.credential ? maskToken(row.credential) : row.raw">
+              <td class="max-w-48 truncate px-3 py-2 font-mono text-cp-text" :title="row.credential ? maskToken(row.credential) : '无法提取凭据'">
                 {{ row.credential ? maskToken(row.credential) : '无法提取凭据' }}
               </td>
               <td class="px-3 py-2">
