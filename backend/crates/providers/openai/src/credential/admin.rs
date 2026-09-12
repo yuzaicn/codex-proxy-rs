@@ -9,9 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, FixedOffset, Utc};
-use gateway_admin::model::provider_credentials::{
-    CredentialImportFailure, CredentialImportFailureKind,
-};
+use gateway_admin::model::provider_credentials::CredentialImportFailure;
 use gateway_core::account::{
     AccountErrorReason, CredentialCasUpdate, CredentialRevision, CredentialState, LoadedCredential,
     NewProviderAccount, ProviderAccount, ProviderAccountId, ProviderAccountIdentity,
@@ -392,24 +390,60 @@ impl CodexCredentialAdminError {
     }
 }
 
-fn classify_import_failure(error: &CodexCredentialAdminError) -> CredentialImportFailureKind {
+pub(crate) fn import_failure(
+    error: &CodexCredentialAdminError,
+    index: usize,
+) -> CredentialImportFailure {
     use CodexCredentialAdminError as Error;
+    let code = credential_admin_error_code(error);
+    let (retryable, message) = match error {
+        Error::RefreshRejected { .. } => (false, "该令牌已失效，请更换"),
+        Error::AccountBanned { .. } => (false, "该账号已被封禁，请更换账号"),
+        Error::RefreshUnavailable => (true, "暂时无法连接上游，请稍后重试"),
+        Error::RefreshAmbiguous { .. } => (true, "上游执行结果未知，请刷新状态后再决定是否重试"),
+        Error::RefreshLeaseUnavailable => (true, "刷新资源暂时不可用，请稍后重试"),
+        Error::InvalidCredential => (false, "凭据格式无效，请检查后重试"),
+        Error::InvalidInput => (false, "导入内容无效，请检查后重试"),
+        Error::MissingRefreshToken => (false, "缺少 refresh token，请补充后重试"),
+        Error::NotFound => (false, "Provider 资源不存在"),
+        Error::PersonalAccessToken(PersonalAccessTokenError::InvalidToken) => (
+            false,
+            "Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符",
+        ),
+        Error::PersonalAccessToken(PersonalAccessTokenError::Rejected) => (
+            false,
+            "OpenAI 拒绝了 Codex PAT：令牌可能无效、已过期、已撤销或没有访问权限",
+        ),
+        Error::PersonalAccessToken(PersonalAccessTokenError::Unavailable) => {
+            (true, "暂时无法向 OpenAI 验证 Codex PAT，请稍后重试")
+        }
+        Error::PersonalAccessToken(PersonalAccessTokenError::InvalidResponse) => (
+            true,
+            "OpenAI 返回的 Codex PAT 身份资料不完整或格式无效，请稍后重试",
+        ),
+    };
+    CredentialImportFailure {
+        index,
+        code,
+        retryable,
+        message,
+    }
+}
+
+pub(crate) const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'static str {
     match error {
-        Error::RefreshAmbiguous { .. } => CredentialImportFailureKind::Ambiguous,
-        Error::RefreshUnavailable
-        | Error::RefreshLeaseUnavailable
-        | Error::PersonalAccessToken(
-            PersonalAccessTokenError::Unavailable | PersonalAccessTokenError::InvalidResponse,
-        ) => CredentialImportFailureKind::Unavailable,
-        Error::InvalidInput
-        | Error::InvalidCredential
-        | Error::MissingRefreshToken
-        | Error::RefreshRejected { .. }
-        | Error::AccountBanned { .. }
-        | Error::NotFound
-        | Error::PersonalAccessToken(
-            PersonalAccessTokenError::InvalidToken | PersonalAccessTokenError::Rejected,
-        ) => CredentialImportFailureKind::InvalidCredential,
+        CodexCredentialAdminError::PersonalAccessToken(_) => {
+            "personal_access_token_validation_failed"
+        }
+        CodexCredentialAdminError::InvalidInput => "invalid_input",
+        CodexCredentialAdminError::InvalidCredential => "invalid_credential",
+        CodexCredentialAdminError::NotFound => "not_found",
+        CodexCredentialAdminError::MissingRefreshToken => "missing_refresh_token",
+        CodexCredentialAdminError::RefreshLeaseUnavailable => "refresh_lease_unavailable",
+        CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
+        CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
+        CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
+        CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }
 
@@ -978,15 +1012,7 @@ impl CodexCredentialAdminService {
             .await;
             match result {
                 Ok(account) => accounts.push(account),
-                Err(error)
-                    if matches!(error, CodexCredentialAdminError::PersonalAccessToken(_)) =>
-                {
-                    return Err(error);
-                }
-                Err(error) => failures.push(CredentialImportFailure {
-                    index,
-                    kind: classify_import_failure(&error),
-                }),
+                Err(error) => failures.push(import_failure(&error, index)),
             }
         }
         Ok(PreparedCodexAccountImport { accounts, failures })

@@ -1059,7 +1059,7 @@ async fn initialized_provider_reports_a_safe_pat_format_error_before_network_acc
     let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
         .await
         .expect("OpenAI bundle");
-    let error = bundle
+    let prepared = bundle
         .admin_provider()
         .prepare_import(PrepareCredentialImport {
             default_outbound_proxy: None,
@@ -1069,14 +1069,19 @@ async fn initialized_provider_reports_a_safe_pat_format_error_before_network_acc
             )]))),
         })
         .await
-        .expect_err("PAT format must be checked by the initialized provider");
-    assert_eq!(error.kind(), ProviderAdminErrorKind::Invalid);
+        .expect("PAT format failure should be returned as an item failure");
+    assert_eq!(prepared.credentials.len(), 0);
+    assert_eq!(prepared.failures.len(), 1);
     assert_eq!(
-        error.public_message(),
-        Some("Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符")
+        prepared.failures[0].code,
+        "personal_access_token_validation_failed"
     );
-    assert!(error.message().is_none());
-    assert!(!format!("{error:?}").contains("sensitive-token"));
+    assert!(!prepared.failures[0].retryable);
+    assert_eq!(
+        prepared.failures[0].message,
+        "Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符"
+    );
+    assert!(!format!("{prepared:?}").contains("sensitive-token"));
 }
 
 #[tokio::test]
