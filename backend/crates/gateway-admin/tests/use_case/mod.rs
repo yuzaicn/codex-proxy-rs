@@ -1,5 +1,5 @@
 mod account_groups;
-mod accounts;
+pub(crate) mod accounts;
 mod auth;
 mod backup;
 mod client_keys;

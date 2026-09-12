@@ -59,9 +59,9 @@ use gateway_admin::{
 };
 use serde_json::{Map, json};
 
-pub(super) type EventLog = Arc<Mutex<Vec<&'static str>>>;
+pub(crate) type EventLog = Arc<Mutex<Vec<&'static str>>>;
 
-pub(super) struct FakeProviderAdmin {
+pub(crate) struct FakeProviderAdmin {
     kind: ProviderKind,
     events: EventLog,
     failure: Mutex<Option<ProviderAdminError>>,
@@ -78,7 +78,7 @@ pub(super) struct FakeProviderAdmin {
 }
 
 impl FakeProviderAdmin {
-    pub(super) fn new(kind: &str, events: EventLog) -> Arc<Self> {
+    pub(crate) fn new(kind: &str, events: EventLog) -> Arc<Self> {
         Arc::new(Self {
             kind: ProviderKind::new(kind).expect("provider kind"),
             events,
@@ -435,7 +435,7 @@ impl ProviderAdmin for FakeProviderAdmin {
     }
 }
 
-pub(super) struct FakeAccountStore {
+pub(crate) struct FakeAccountStore {
     events: EventLog,
     accounts: Mutex<Vec<AccountRecord>>,
     account_after_probe: Mutex<Option<AccountRecord>>,
@@ -447,7 +447,7 @@ pub(super) struct FakeAccountStore {
 }
 
 impl FakeAccountStore {
-    pub(super) fn new(kind: &str, events: EventLog) -> Arc<Self> {
+    pub(crate) fn new(kind: &str, events: EventLog) -> Arc<Self> {
         Self::with_account(account_record(kind), events)
     }
 
@@ -492,7 +492,7 @@ impl FakeAccountStore {
             .clone()
     }
 
-    pub(super) fn set_accounts(&self, accounts: Vec<AccountRecord>) {
+    pub(crate) fn set_accounts(&self, accounts: Vec<AccountRecord>) {
         *self.accounts.lock().expect("accounts") = accounts;
     }
 
@@ -2081,7 +2081,7 @@ fn quota_local_usage(account_id: &str, total_tokens: u64) -> AccountUsage {
     }
 }
 
-pub(super) fn account_record(kind: &str) -> AccountRecord {
+pub(crate) fn account_record(kind: &str) -> AccountRecord {
     let now = Utc::now();
     AccountRecord {
         outbound_proxy: None,

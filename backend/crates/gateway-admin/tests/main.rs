@@ -21,7 +21,7 @@ use gateway_admin::{
 
 mod backup;
 mod model;
-mod use_case;
+pub(crate) mod use_case;
 mod workers;
 
 #[test]
