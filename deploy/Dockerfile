@@ -33,7 +33,6 @@ COPY backend/migrations ./migrations
 COPY release/version.yaml /app/release/version.yaml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/backend/target \
     cargo build --release --locked --bin codex-proxy-rs \
     && cp "${CARGO_TARGET_DIR}/release/codex-proxy-rs" /tmp/codex-proxy-rs
 
