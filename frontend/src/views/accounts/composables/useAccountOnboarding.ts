@@ -42,7 +42,7 @@ export interface TokenImportRow {
   entry: Record<string, unknown> | null
 }
 
-// 汇总条与完成提示共用的口径：失败=退避耗尽可手动重试；还需要你处理=需要处理/未识别/重复。
+// 汇总条与完成提示共用的口径：失败=自动重试耗尽或风险桶（结果未知）单次失败，均可手动重试；还需要你处理=需要处理/未识别/重复。
 export function tokenImportSummary(rows: TokenImportRow[]) {
   return {
     pending: rows.filter(row => row.status === 'pending').length,
@@ -525,6 +525,8 @@ export function useAccountOnboarding(options: {
 }
 
 function importFailureMessage(error: unknown) {
+  if (isRiskyAmbiguousImportError(error))
+    return '上游执行结果未知，该账号可能已导入。请先刷新账号列表确认，未导入再重试；反复重试可能使该 Refresh Token 永久失效'
   if (isAmbiguousImportError(error))
     return '上游执行结果未知，账号可能已导入；重试是安全的（同账号会更新，不会重复创建）'
   return errorMessage(error, '导入失败')
@@ -537,16 +539,28 @@ function importResponseFailure(result: { failures?: Array<{ code: string, retrya
   return failure
 }
 
+// 风险桶：真 ambiguous —— 上游可能已消费该凭据但结果未送达（50202），或本地拿不到请求结果
+// （超时 / 断网 / 408 / status 0）。自动重放同一 Refresh Token 会撞 refresh_token_reused 导致永久失效，
+// 因此这类错误只允许用户手动重试。40901 不在此桶：conflict 语义下同账号更新基本成立。
+function isRiskyAmbiguousImportError(error: unknown) {
+  if (!(error instanceof ApiError))
+    return false
+  return error.code === 50202 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
+}
+
 function isAmbiguousImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
-  return error.code === 50202 || error.code === 40901 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
+  return error.code === 40901 || isRiskyAmbiguousImportError(error)
 }
 
+// 自动重试只保留「上游明确拒绝且重放安全」的失败：(5xx 且非 50202) 或 409；风险桶一律单次即失败。
 function isRetryableImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
-  return error.status >= 500 || error.status === 409 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
+  if (isRiskyAmbiguousImportError(error))
+    return false
+  return error.status >= 500 || error.status === 409
 }
 
 function isNeedsActionImportError(error: unknown) {
