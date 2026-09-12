@@ -411,6 +411,20 @@ impl ProviderAdmin for OpenAiAdminProvider {
             return Err(provider_admin_error(ProviderAdminErrorKind::Conflict));
         }
         let mut secret = rotation_secret(command.provider_material)?;
+        let next_refresh_at = if secret.refresh_token.is_none() {
+            let runtime = CodexCredentialCodec::decode(&current.credential)
+                .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
+            if let Some(refresh_token) = runtime
+                .authentication
+                .oauth()
+                .and_then(|oauth| oauth.refresh_token.clone())
+            {
+                secret.refresh_token = Some(refresh_token);
+            }
+            current.account.next_refresh_at().map(DateTime::<Utc>::from)
+        } else {
+            None
+        };
         if secret.id_token.is_none() {
             let runtime = CodexCredentialCodec::decode(&current.credential)
                 .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
@@ -422,7 +436,12 @@ impl ProviderAdmin for OpenAiAdminProvider {
         let access_token_expires_at =
             parse_access_token_expiration(secret.access_token.expose_secret());
         let prepared = CodexCredentialAdmin
-            .prepare_refreshed_oauth_rotation(current, secret, access_token_expires_at, None)
+            .prepare_refreshed_oauth_rotation(
+                current,
+                secret,
+                access_token_expires_at,
+                next_refresh_at,
+            )
             .map_err(map_credential_admin_error)?;
         prepared_rotation(prepared, command.account.provider_kind)
     }
@@ -1339,9 +1358,8 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
         | Error::RefreshRejected { .. }
         | Error::AccountBanned { .. } => ProviderAdminErrorKind::Invalid,
         Error::NotFound => ProviderAdminErrorKind::NotFound,
-        Error::RefreshLeaseUnavailable | Error::RefreshAmbiguous { .. } => {
-            ProviderAdminErrorKind::Conflict
-        }
+        Error::RefreshLeaseUnavailable => ProviderAdminErrorKind::Conflict,
+        Error::RefreshAmbiguous { .. } => ProviderAdminErrorKind::Ambiguous,
         Error::PersonalAccessToken(PersonalAccessTokenError::InvalidResponse) => {
             ProviderAdminErrorKind::BadGateway
         }

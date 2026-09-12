@@ -5,8 +5,8 @@ use gateway_core::account::ProviderAccountId;
 use gateway_admin::{
     AdminServices,
     model::provider_credentials::{
-        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion, ImportCredentials,
-        ProviderQuotaRequest, StartAuthorization,
+        AuthorizationMutationTarget, CompleteAuthorization, CredentialDeletion, CredentialMutation,
+        ImportCredentials, ProviderQuotaRequest, RotateCredential, StartAuthorization,
     },
     ports::provider::ProviderAdminErrorKind,
 };
@@ -361,6 +361,86 @@ async fn openai_import_provider_error_should_not_touch_store_transaction() {
         .expect_err("invalid Provider document");
 
     assert_eq!(recorded(&events), ["provider.prepare_import"]);
+}
+
+#[tokio::test]
+async fn openai_rotate_should_prepare_and_commit_for_existing_account() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = service(provider, store.clone()).await;
+
+    let result = services
+        .openai()
+        .rotate(RotateCredential {
+            mutation: CredentialMutation {
+                context: context("rotate-openai"),
+                account_id: ProviderAccountId::new("acct_test").expect("account ID"),
+            },
+            provider_material: document(),
+        })
+        .await
+        .expect("rotate account");
+
+    assert_eq!(result.account_id.as_str(), "acct_test");
+    assert_eq!(
+        recorded(&events),
+        [
+            "store.credential_details",
+            "provider.prepare_rotation",
+            "store.commit_rotation",
+            "guard.finish",
+            "provider.account_facts_changed",
+        ]
+    );
+    assert_eq!(store.audit_requests(), ["rotate-openai"]);
+}
+
+#[tokio::test]
+async fn openai_rotate_should_return_not_found_for_missing_account() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    let store = FakeAccountStore::new("openai", events.clone());
+    store.set_accounts(Vec::new());
+    let services = service(provider, store).await;
+
+    let error = services
+        .openai()
+        .rotate(RotateCredential {
+            mutation: CredentialMutation {
+                context: context("rotate-openai-missing"),
+                account_id: ProviderAccountId::new("acct_test").expect("account ID"),
+            },
+            provider_material: document(),
+        })
+        .await
+        .expect_err("missing account must be rejected");
+
+    assert_eq!(error.kind(), gateway_admin::model::AdminErrorKind::NotFound);
+    assert_eq!(recorded(&events), ["store.credential_details"]);
+}
+
+#[tokio::test]
+async fn openai_rotate_should_reject_non_openai_account() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("xai", events.clone());
+    let store = FakeAccountStore::new("xai", events.clone());
+    let services = service(provider, store).await;
+
+    let error = services
+        .openai()
+        .rotate(RotateCredential {
+            mutation: CredentialMutation {
+                context: context("rotate-xai"),
+                account_id: ProviderAccountId::new("acct_test").expect("account ID"),
+            },
+            provider_material: document(),
+        })
+        .await
+        .expect_err("OpenAI rotation must reject non-OpenAI accounts");
+
+    assert_eq!(error.kind(), gateway_admin::model::AdminErrorKind::NotFound);
+    assert_eq!(recorded(&events), ["store.credential_details"]);
 }
 
 #[tokio::test]

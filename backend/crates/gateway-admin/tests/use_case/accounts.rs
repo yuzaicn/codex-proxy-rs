@@ -1915,6 +1915,37 @@ async fn accounts_refresh_provider_failure_should_not_call_store_commit() {
 }
 
 #[tokio::test]
+async fn accounts_refresh_ambiguous_provider_failure_should_use_unknown_result_error() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    provider.fail_next(ProviderAdminErrorKind::Ambiguous);
+    let store = FakeAccountStore::new("openai", events.clone());
+    let services = accounts_service(provider, store).await;
+
+    let error = services
+        .accounts()
+        .refresh(
+            &context("refresh-ambiguous-provider-error"),
+            ProviderAccountId::new("acct_test").expect("account ID"),
+        )
+        .await
+        .expect_err("ambiguous Provider failure must fail the refresh");
+
+    assert_eq!(
+        error.kind(),
+        gateway_admin::model::AdminErrorKind::UpstreamResultUnknown
+    );
+    assert_eq!(
+        error.to_string(),
+        "上游执行结果未知，请刷新状态后再决定是否重试"
+    );
+    assert_eq!(
+        recorded(&events),
+        ["store.load_account", "provider.prepare_refresh"]
+    );
+}
+
+#[tokio::test]
 async fn reset_credit_oauth_refresh_should_reuse_the_exact_consume_command() {
     let events = events();
     let provider = FakeProviderAdmin::new("openai", events.clone());
