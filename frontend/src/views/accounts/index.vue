@@ -28,6 +28,7 @@ import AccountOverviewCards from './components/AccountOverviewCards.vue'
 import AccountPlanBadge from './components/AccountPlanBadge.vue'
 import AccountQuotaPanel from './components/AccountQuotaPanel/index.vue'
 import AccountQuotaSummaryCell from './components/AccountQuotaSummaryCell/index.vue'
+import AccountResetCreditsCell from './components/AccountResetCreditsCell.vue'
 import AccountStatusBadge from './components/AccountStatusBadge/index.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
 import AccountUsagePanel from './components/AccountUsagePanel.vue'
@@ -292,18 +293,27 @@ const {
             </template>
 
             <template #schedulingSuspended="{ row }">
+              <!-- inline-prompt 把状态文本收进轨道内：旁侧文本模式在本列宽度下会溢出到相邻列；52px 轨道恰好容纳两字文案。 -->
               <BaseSwitch
                 :model-value="!row.schedulingSuspended"
                 label="切换账号调度"
                 :disabled="schedulingSuspendedUpdating[row.id]"
                 active-text="正常"
                 inactive-text="暂停"
+                inline-prompt
+                :width="52"
                 @update:model-value="(val) => toggleScheduling(row, !val)"
               />
             </template>
 
             <template #planType="{ row }">
               <AccountPlanBadge :plan-type="row.planType" :plan-type-display="row.planTypeDisplay" />
+            </template>
+
+            <template #resetCredits="{ row }">
+              <div class="flex w-full justify-center">
+                <AccountResetCreditsCell :account="row" />
+              </div>
             </template>
 
             <template #usage="{ row }">

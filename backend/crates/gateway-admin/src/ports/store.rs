@@ -40,6 +40,10 @@ use crate::model::{
         CredentialListQuery, CredentialMutationResult, CredentialPage, CredentialRotationCommit,
         ProviderExportCredentialInput,
     },
+    reset_detection::{
+        CompleteResetCreditConsume, ReplaceResetDetectionSettings, ResetCreditConsumeReservation,
+        ResetDetectionSettings, ResetDetectionSettingsMutation,
+    },
     settings::{AdminApiKey, AdminApiKeyMutation, ReplaceRuntimeSettings, RuntimeSettings},
 };
 
@@ -424,6 +428,98 @@ pub trait SettingsStore: Send + Sync {
     ) -> AdminStoreResult<AdminApiKeyMutation>;
 }
 
+#[async_trait]
+pub trait ResetDetectionStore: Send + Sync {
+    async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings>;
+    async fn replace_reset_detection_settings(
+        &self,
+        command: ReplaceResetDetectionSettings,
+        context: &MutationContext,
+    ) -> AdminStoreResult<ResetDetectionSettingsMutation>;
+
+    /// 写回上游重置卡数量观测；不推进配置 revision。
+    async fn record_reset_credits_observation(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+        available_count: u64,
+        observed_at: DateTime<Utc>,
+    ) -> AdminStoreResult<()>;
+
+    /// 在不可逆调用前持久化 UUIDv4；账号已有未完成请求时固定复用旧值。
+    async fn reserve_reset_credit_consume(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+        candidate: uuid::Uuid,
+    ) -> AdminStoreResult<ResetCreditConsumeReservation>;
+
+    /// 仅在消费结果确定时结束幂等请求；歧义状态必须保持未完成。
+    async fn complete_reset_credit_consume(
+        &self,
+        completion: CompleteResetCreditConsume,
+    ) -> AdminStoreResult<()>;
+}
+
+struct UnavailableResetDetectionStore;
+
+#[async_trait]
+impl ResetDetectionStore for UnavailableResetDetectionStore {
+    async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn replace_reset_detection_settings(
+        &self,
+        _command: ReplaceResetDetectionSettings,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<ResetDetectionSettingsMutation> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn record_reset_credits_observation(
+        &self,
+        _account_id: &gateway_core::account::ProviderAccountId,
+        _available_count: u64,
+        _observed_at: DateTime<Utc>,
+    ) -> AdminStoreResult<()> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credits observation",
+            "store is unavailable",
+        ))
+    }
+
+    async fn reserve_reset_credit_consume(
+        &self,
+        _account_id: &gateway_core::account::ProviderAccountId,
+        _candidate: uuid::Uuid,
+    ) -> AdminStoreResult<ResetCreditConsumeReservation> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credit consume reservation",
+            "store is unavailable",
+        ))
+    }
+
+    async fn complete_reset_credit_consume(
+        &self,
+        _completion: CompleteResetCreditConsume,
+    ) -> AdminStoreResult<()> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset credit consume completion",
+            "store is unavailable",
+        ))
+    }
+}
+
 /// 账号目录、运行态与分组所需的 Store 能力集合。
 #[derive(Clone)]
 pub struct AdminAccountStorePorts {
@@ -461,6 +557,7 @@ pub struct AdminStorePorts {
     observability: Arc<dyn ObservabilityStore>,
     settings: Arc<dyn SettingsStore>,
     detection: Arc<dyn DetectionStore>,
+    reset_detection: Arc<dyn ResetDetectionStore>,
     backup: BackupStorePorts,
 }
 
@@ -482,8 +579,34 @@ impl AdminStorePorts {
             observability,
             settings,
             detection,
+            reset_detection: Arc::new(UnavailableResetDetectionStore),
             backup,
         }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_reset_detection(
+        accounts: AdminAccountStorePorts,
+        auth: Arc<dyn AuthStore>,
+        client_keys: Arc<dyn ClientKeyStore>,
+        observability: Arc<dyn ObservabilityStore>,
+        settings: Arc<dyn SettingsStore>,
+        detection: Arc<dyn DetectionStore>,
+        reset_detection: Arc<dyn ResetDetectionStore>,
+        backup: BackupStorePorts,
+    ) -> Self {
+        let mut ports = Self::new(
+            accounts,
+            auth,
+            client_keys,
+            observability,
+            settings,
+            detection,
+            backup,
+        );
+        ports.reset_detection = reset_detection;
+        ports
     }
 
     #[must_use]
@@ -529,6 +652,11 @@ impl AdminStorePorts {
     #[must_use]
     pub fn detection(&self) -> Arc<dyn DetectionStore> {
         self.detection.clone()
+    }
+
+    #[must_use]
+    pub fn reset_detection(&self) -> Arc<dyn ResetDetectionStore> {
+        self.reset_detection.clone()
     }
 
     #[must_use]

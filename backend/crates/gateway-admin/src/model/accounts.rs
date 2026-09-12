@@ -104,6 +104,8 @@ pub struct AccountRecord {
     pub credential_state: CredentialState,
     pub credential_observed_at: DateTime<Utc>,
     pub quota: QuotaState,
+    pub reset_credits_available_count: Option<u64>,
+    pub reset_credits_observed_at: Option<DateTime<Utc>>,
     pub last_error_reason: Option<AccountErrorReason>,
     pub last_error_message: Option<String>,
     pub created_at: DateTime<Utc>,

@@ -152,6 +152,8 @@ pub struct ProviderAccountSummary {
     pub credential_state: CredentialState,
     pub credential_observed_at: DateTime<Utc>,
     pub quota: QuotaState,
+    pub reset_credits_available_count: Option<u64>,
+    pub reset_credits_observed_at: Option<DateTime<Utc>>,
     pub last_error_reason: Option<AccountErrorReason>,
     pub last_error_message: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -409,6 +411,7 @@ pub(crate) const ACCOUNT_SELECT: &str = "select outbound_proxy_url, id, provider
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
             scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
+            reset_credits_available_count, reset_credits_observed_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts where id = $1";
@@ -418,6 +421,7 @@ pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select outbound_proxy_url, id, p
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
             scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
+            reset_credits_available_count, reset_credits_observed_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts
@@ -429,6 +433,7 @@ pub(crate) const REFRESH_CANDIDATES_SELECT: &str = "select outbound_proxy_url, i
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled,
             scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
+            reset_credits_available_count, reset_credits_observed_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts
@@ -592,6 +597,10 @@ pub(crate) fn account_summary_from_row(
         credential_state: parse_credential_state(&credential_state)?,
         credential_observed_at: get(&row, "credential_observed_at")?,
         quota,
+        reset_credits_available_count: get::<Option<i64>>(&row, "reset_credits_available_count")?
+            .map(|value| u64::try_from(value).map_err(|_| invalid("invalid reset credits count")))
+            .transpose()?,
+        reset_credits_observed_at: get(&row, "reset_credits_observed_at")?,
         last_error_reason: parse_error_reason(get(&row, "last_error_reason")?)?,
         last_error_message: get(&row, "last_error_message")?,
         created_at: get(&row, "created_at")?,

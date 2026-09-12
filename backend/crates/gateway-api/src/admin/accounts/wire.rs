@@ -271,7 +271,15 @@ pub struct AccountView {
     pub updated_at: String,
     pub updated_at_display: String,
     pub quota: AccountQuotaView,
+    pub reset_credits: Option<AccountResetCreditsObservationView>,
     pub usage: AccountUsageView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountResetCreditsObservationView {
+    pub available_count: u64,
+    pub observed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

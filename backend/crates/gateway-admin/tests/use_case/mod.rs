@@ -6,6 +6,7 @@ mod client_keys;
 mod observability;
 mod openai;
 mod proxies;
+mod reset_detection;
 mod settings;
 mod system;
 mod xai;

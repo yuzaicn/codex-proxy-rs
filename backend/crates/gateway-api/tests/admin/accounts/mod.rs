@@ -813,3 +813,127 @@ mod import_settings {
         }
     }
 }
+
+mod reset_credits_wire {
+    use gateway_api::admin::accounts::AccountResetCreditsObservationView;
+
+    #[test]
+    fn observation_serializes_camel_case_and_preserves_zero() {
+        let value = serde_json::to_value(AccountResetCreditsObservationView {
+            available_count: 0,
+            observed_at: "2026-09-12T08:00:00Z".to_owned(),
+        })
+        .expect("serialize reset credits observation");
+        assert_eq!(value["availableCount"], 0);
+        assert_eq!(value["observedAt"], "2026-09-12T08:00:00Z");
+        assert!(
+            serde_json::to_value(Option::<AccountResetCreditsObservationView>::None)
+                .expect("serialize missing observation")
+                .is_null()
+        );
+    }
+}
+
+mod reset_credits_view {
+    use chrono::{DateTime, Utc};
+    use gateway_admin::model::{
+        Revision,
+        accounts::AccountRecord,
+        provider_credentials::{AccountDirectoryItem, ProviderQuota},
+    };
+    use gateway_api::admin::accounts::account_view;
+    use gateway_core::account::{
+        AccountStatus, AccountStatusProjection, AccountWeight, CredentialState, QuotaState,
+    };
+    use gateway_core::identity::ProviderKind;
+
+    fn fixed(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("fixed timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn directory_item(observation: Option<(u64, DateTime<Utc>)>) -> AccountDirectoryItem {
+        let created = fixed("2026-09-11T00:00:00Z");
+        AccountDirectoryItem {
+            account: AccountRecord {
+                id: "acct_reset_snapshot".to_owned(),
+                provider_kind: ProviderKind::new("openai").expect("provider kind"),
+                groups: Vec::new(),
+                name: "reset snapshot".to_owned(),
+                email: None,
+                upstream_user_id: None,
+                upstream_account_id: None,
+                plan_type: None,
+                authentication_kind: "oauth".to_owned(),
+                credential_revision: Revision::new(1).expect("revision"),
+                has_refresh_token: false,
+                access_token_expires_at: None,
+                next_refresh_at: None,
+                enabled: true,
+                scheduling_suspended: false,
+                concurrency_limit: None,
+                weight: AccountWeight::DEFAULT,
+                outbound_proxy: None,
+                credential_state: CredentialState::Ready,
+                credential_observed_at: created,
+                quota: QuotaState::allowed(created.into()),
+                reset_credits_available_count: observation.map(|(count, _)| count),
+                reset_credits_observed_at: observation.map(|(_, observed_at)| observed_at),
+                last_error_reason: None,
+                last_error_message: None,
+                created_at: created,
+                updated_at: created,
+            },
+            plan_type_display: None,
+            projection: AccountStatusProjection {
+                status: AccountStatus::Normal,
+                error_reason: None,
+                error_message: None,
+                rate_limited_until: None,
+            },
+            usage: None,
+            quota: ProviderQuota {
+                plan_type: None,
+                observed_at: None,
+                refresh_token_expires_at: None,
+                windows: Vec::new(),
+                limit_reached: false,
+                provider_data: None,
+            },
+        }
+    }
+
+    #[test]
+    fn account_view_serializes_reset_credits_observed_and_unobserved_states() {
+        let now = fixed("2026-09-12T09:00:00Z");
+
+        let observed = serde_json::to_value(account_view(
+            directory_item(Some((2, fixed("2026-09-12T08:00:00Z")))),
+            now,
+        ))
+        .expect("serialize observed account view");
+        assert_eq!(
+            observed["resetCredits"],
+            serde_json::json!({
+                "availableCount": 2,
+                "observedAt": "2026-09-12T16:00:00+08:00",
+            })
+        );
+
+        let zero_observed = serde_json::to_value(account_view(
+            directory_item(Some((0, fixed("2026-09-12T08:00:00Z")))),
+            now,
+        ))
+        .expect("serialize zero-count account view");
+        assert_eq!(zero_observed["resetCredits"]["availableCount"], 0);
+        assert!(!zero_observed["resetCredits"].is_null());
+
+        let unobserved = serde_json::to_value(account_view(directory_item(None), now))
+            .expect("serialize unobserved account view");
+        let reset_credits = unobserved
+            .get("resetCredits")
+            .expect("resetCredits field must be present");
+        assert!(reset_credits.is_null());
+    }
+}

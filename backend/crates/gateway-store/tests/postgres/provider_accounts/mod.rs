@@ -2543,6 +2543,87 @@ async fn disabled_account_preserves_user_state_during_refresh_writes() {
     database.close().await;
 }
 
+#[tokio::test]
+async fn admin_list_should_expose_reset_credits_observation_pair_from_sql() {
+    let Some(database) = TestDatabase::create("provider_account_reset_credits").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    for (id, user) in [
+        ("acct_reset_observed", "user-reset-observed"),
+        ("acct_reset_zero", "user-reset-zero"),
+        ("acct_reset_unobserved", "user-reset-unobserved"),
+    ] {
+        repository
+            .insert_provider_account(account(id, user))
+            .await
+            .expect("insert reset credits fixture");
+    }
+
+    let store = admin_account_store(&database.pool);
+    let query = || AccountListQuery {
+        page: 1,
+        page_size: PageSize::new(10).expect("page size"),
+        provider_kind: None,
+        group_filter: None,
+        search: None,
+        status: None,
+        sort: None,
+    };
+    let before = store
+        .list_accounts(query(), Default::default())
+        .await
+        .expect("list accounts before observation");
+    assert_eq!(before.total, 3);
+    assert!(before.items.iter().all(|item| {
+        item.account.reset_credits_available_count.is_none()
+            && item.account.reset_credits_observed_at.is_none()
+    }));
+
+    let observed_at = chrono::DateTime::parse_from_rfc3339("2026-09-12T08:00:00Z")
+        .expect("observation timestamp")
+        .with_timezone(&Utc);
+    for (id, count) in [("acct_reset_observed", 2_i64), ("acct_reset_zero", 0_i64)] {
+        sqlx::query(
+            "update provider_accounts
+             set reset_credits_available_count = $1, reset_credits_observed_at = $2
+             where id = $3",
+        )
+        .bind(count)
+        .bind(observed_at)
+        .bind(id)
+        .execute(&database.pool)
+        .await
+        .expect("seed reset credits observation");
+    }
+
+    let after = store
+        .list_accounts(query(), Default::default())
+        .await
+        .expect("list accounts after observation");
+    let record = |id: &str| {
+        after
+            .items
+            .iter()
+            .find(|item| item.account.id == id)
+            .expect("account present in page")
+    };
+    let observed = record("acct_reset_observed");
+    assert_eq!(observed.account.reset_credits_available_count, Some(2));
+    assert_eq!(
+        observed.account.reset_credits_observed_at,
+        Some(observed_at)
+    );
+    let zero = record("acct_reset_zero");
+    assert_eq!(zero.account.reset_credits_available_count, Some(0));
+    assert_eq!(zero.account.reset_credits_observed_at, Some(observed_at));
+    let unobserved = record("acct_reset_unobserved");
+    assert_eq!(unobserved.account.reset_credits_available_count, None);
+    assert_eq!(unobserved.account.reset_credits_observed_at, None);
+
+    database.close().await;
+}
+
 pub(super) fn account(id: &str, upstream_user_id: &str) -> NewProviderAccount {
     NewProviderAccount {
         outbound_proxy: None,

@@ -24,6 +24,7 @@ mod ops_events;
 mod provider_accounts;
 mod proxies;
 mod query_budget;
+mod reset_detection;
 mod retention;
 mod runtime_settings;
 mod schema_integrity;
@@ -240,6 +241,7 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "ops_events",
             "outbound_proxies",
             "provider_accounts",
+            "reset_detection_settings",
             "runtime_settings",
         ]
     );

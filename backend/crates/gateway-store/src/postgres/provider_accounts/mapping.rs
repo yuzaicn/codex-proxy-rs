@@ -33,6 +33,8 @@ pub(crate) fn admin_account_record(
         credential_state: summary.credential_state,
         credential_observed_at: summary.credential_observed_at,
         quota: summary.quota,
+        reset_credits_available_count: summary.reset_credits_available_count,
+        reset_credits_observed_at: summary.reset_credits_observed_at,
         last_error_reason: summary.last_error_reason,
         last_error_message: summary.last_error_message,
         created_at: summary.created_at,

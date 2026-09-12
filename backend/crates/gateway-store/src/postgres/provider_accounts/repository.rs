@@ -126,6 +126,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
                     scheduling_suspended, scheduling_suspended_by, concurrency_limit, weight, credential_state,
                     credential_observed_at, quota_access_state, quota_evidence,
                     quota_access_observed_at, quota_reset_at,
+                    reset_credits_available_count, reset_credits_observed_at,
                     quota_observed_at, last_error_reason, last_error_message, created_at, updated_at
              from provider_accounts
              where ($1::text is null or provider_kind = $1) and ($2 or enabled)

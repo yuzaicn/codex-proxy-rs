@@ -97,7 +97,7 @@ pub async fn initialize(mut config: StoreConfig) -> StoreResult<StoreBundle> {
         REDIS_NAMESPACE,
     )?);
 
-    let admin_ports = AdminStorePorts::new(
+    let admin_ports = AdminStorePorts::new_with_reset_detection(
         AdminAccountStorePorts::new(
             Arc::new(postgres::PgAdminAccountStore::new(
                 pool.clone(),
@@ -127,6 +127,7 @@ pub async fn initialize(mut config: StoreConfig) -> StoreResult<StoreBundle> {
             control_plane: postgres::PgControlPlaneRepository::new(pool.clone()),
         }),
         Arc::new(postgres::PgDetectionStore::new(pool.clone())),
+        Arc::new(postgres::PgResetDetectionStore::new(pool.clone())),
         backup_ports(pool.clone(), &config)?,
     );
 

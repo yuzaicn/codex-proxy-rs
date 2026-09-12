@@ -18,6 +18,7 @@ mod extract;
 pub mod observability;
 pub mod presenter;
 pub mod proxies;
+pub mod reset_detection;
 pub mod settings;
 pub mod system;
 pub mod wire;
@@ -44,6 +45,7 @@ where
         .merge(detection::router::<S>())
         .merge(observability::router::<S>())
         .merge(settings::router::<S>())
+        .merge(reset_detection::router::<S>())
         .merge(system::router::<S>())
         .method_not_allowed_fallback(method_not_allowed)
         .route("/api/admin", any(admin_not_found))

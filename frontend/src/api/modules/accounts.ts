@@ -109,6 +109,12 @@ export interface AccountUsage {
   models: AccountModelUsage[]
 }
 
+/** 重置卡后台观测值：由轮询 Worker 写回，与面板里用户手动查询的即时结果来源不同。 */
+export interface AccountResetCreditsObservation {
+  availableCount: number
+  observedAt: string
+}
+
 export interface Account {
   outboundProxyEndpoint: string | null
   id: string
@@ -140,6 +146,8 @@ export interface Account {
   updatedAt: string
   updatedAtDisplay: string
   quota: AccountQuota
+  /** null = 从未观测过（与观测到 0 张含义不同）；旧接口未返回时同样视为未观测。 */
+  resetCredits?: AccountResetCreditsObservation | null
   usage: AccountUsage
   groups: AccountGroupRef[]
 }
