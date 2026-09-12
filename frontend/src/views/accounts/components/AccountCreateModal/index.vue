@@ -24,9 +24,10 @@ const props = withDefaults(defineProps<{
   reauthorizing?: boolean
   account?: AccountRow | null
   tokenRows?: TokenImportRow[]
-}>(), { saving: false, oauthLoading: false, reauthorizing: false, account: null })
+  tokenImportNotice?: string
+}>(), { saving: false, oauthLoading: false, reauthorizing: false, account: null, tokenImportNotice: '' })
 
-const emit = defineEmits<{ create: [], generateOauth: [], retryRow: [id: string], retryFailed: [], copyFailed: [], setRowKind: [payload: { id: string, kind: TokenImportKind }], removeRow: [id: string], setUnknownKind: [kind: TokenImportKind] }>()
+const emit = defineEmits<{ create: [], generateOauth: [], appendText: [text: string], retryRow: [id: string], retryFailed: [], copyFailed: [], setRowKind: [payload: { id: string, kind: TokenImportKind }], removeRow: [id: string], setUnknownKind: [kind: TokenImportKind] }>()
 const open = defineModel<boolean>({ default: false })
 const form = defineModel<AccountCreateForm>('form', { required: true })
 const busy = computed(() => props.saving || props.oauthLoading)
@@ -38,6 +39,7 @@ const view = computed(() => resolveAccountCreatePresentation({
   saving: props.saving,
   oauthLoading: props.oauthLoading,
   reauthorizing: props.reauthorizing,
+  tokenRows: props.tokenRows,
 }))
 const mode = computed({
   get: () => form.value.mode,
@@ -116,8 +118,11 @@ function continueToImport() {
           :label="view.importInput.label"
           :placeholder="view.importInput.placeholder"
           :uploadable="view.importInput.uploadable"
+          :auto-mode="mode === 'auto'"
           :disabled="busy"
           :rows="mode === 'auto' ? (props.tokenRows || []) : undefined"
+          :notice="mode === 'auto' ? props.tokenImportNotice : undefined"
+          @append-text="emit('appendText', $event)"
           @retry-row="emit('retryRow', $event)"
           @retry-failed="emit('retryFailed')"
           @copy-failed="emit('copyFailed')"

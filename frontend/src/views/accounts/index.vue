@@ -96,6 +96,8 @@ const {
   reauthorizingAccount,
   createForm,
   tokenRows,
+  tokenImportNotice,
+  appendTokenText,
   handleCreate,
   handleAuthorizeOAuth,
   openCreateAccount,
@@ -385,8 +387,10 @@ const {
       :reauthorizing="Boolean(reauthorizingAccount)"
       :saving="creatingAccount"
       :token-rows="tokenRows"
+      :token-import-notice="tokenImportNotice"
       @create="handleCreate"
       @generate-oauth="handleAuthorizeOAuth"
+      @append-text="appendTokenText"
       @retry-row="retryImportRow"
       @retry-failed="retryFailedImports"
       @copy-failed="copyFailedImports"

@@ -1,3 +1,4 @@
+import type { TokenImportRow } from '../../composables/useAccountOnboarding'
 import type { AccountRow } from '../../constants'
 import type { AccountCreateForm, AccountCreateProvider } from './model'
 
@@ -7,6 +8,7 @@ interface AccountCreatePresentationInput {
   saving: boolean
   oauthLoading: boolean
   reauthorizing: boolean
+  tokenRows?: TokenImportRow[]
 }
 
 const modeOptions = {
@@ -152,6 +154,11 @@ function canSubmit(
 ) {
   if (!provider || input.saving || input.oauthLoading)
     return false
+  if (input.form.mode === 'auto') {
+    return (input.tokenRows || []).some(row => (
+      row.status === 'pending' || row.status === 'failed' || row.status === 'needs_action'
+    ) && row.entry && row.kind !== 'unknown' && row.kind !== 'unsupported')
+  }
   if (input.form.mode !== 'oauth')
     return input.form.importTexts[input.form.mode].trim().length > 0
   return Boolean(
