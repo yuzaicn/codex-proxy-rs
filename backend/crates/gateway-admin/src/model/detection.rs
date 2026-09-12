@@ -71,6 +71,8 @@ pub struct DetectionRecord {
     pub checked_at: DateTime<Utc>,
     pub degraded: bool,
     pub scheduling_suspended: bool,
+    /// 探测响应中的思考过程，供降智判定复核。
+    pub reasoning_content: Option<String>,
 }
 
 /// 检测记录分页查询；页码从 1 开始。
@@ -106,5 +108,6 @@ pub struct NewDetectionRecord {
     pub account_id: String,
     pub degraded: bool,
     pub html_content: Option<String>,
+    pub reasoning_content: Option<String>,
     pub matched_phrases: Vec<String>,
 }

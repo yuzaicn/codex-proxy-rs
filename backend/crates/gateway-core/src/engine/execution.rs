@@ -756,16 +756,21 @@ impl DefaultExecutionService {
                 .observe_probe_failure(&observed, started_at, &error)
                 .await);
         }
-        Ok(AccountProbeResult {
-            text: events
-                .into_iter()
-                .flat_map(|event| event.into_parts().0)
-                .filter_map(|fact| match fact {
-                    GatewayEvent::TextDelta(delta) => Some(delta.text),
-                    _ => None,
-                })
-                .collect(),
-        })
+        let (text, reasoning) = events
+            .into_iter()
+            .flat_map(|event| event.into_parts().0)
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut text, mut reasoning), fact| {
+                    match fact {
+                        GatewayEvent::TextDelta(delta) => text.push(delta.text),
+                        GatewayEvent::ReasoningDelta(delta) => reasoning.push(delta.text),
+                        _ => {}
+                    }
+                    (text, reasoning)
+                },
+            );
+        Ok(AccountProbeResult { text, reasoning })
     }
 
     /// 探测失败先记录脱敏分类事实，再把请求局部的原始上游响应交给认证管理端。

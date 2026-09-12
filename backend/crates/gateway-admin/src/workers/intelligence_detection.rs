@@ -40,13 +40,10 @@ use crate::{
 };
 
 /// 探测固定提示词；降智账号对它的答复会退化为纯文本描述。
-const DETECTION_PROMPT: &str = "创建一个 HTML，内容是 SVG 绘制一个鹈鹕骑自行车的 2D 动画。";
+const DETECTION_PROMPT: &str = "创建一个HTML，内容是SVG绘制一个企鹅骑自行车的2D动画。";
 
 /// 单轮探测允许同时在途的账号数。
 const MAX_CONCURRENT_PROBES: usize = 16;
-
-/// 降智指征关键词；ASCII 大小写不敏感，命中任意一个即判定降智。
-const DEGRADED_PHRASES: &[&str] = &["内嵌 SVG 和 CSS", "inline SVG", "SVG and CSS"];
 
 /// 降智检测周期任务；一次 `run_cycle` 至多执行一轮全量探测。
 pub struct IntelligenceDetectionTask {
@@ -251,8 +248,8 @@ impl IntelligenceDetectionTask {
                 operation,
             })
             .await;
-        let text = match result {
-            Ok(result) => result.text.concat(),
+        let (text, reasoning) = match result {
+            Ok(result) => (result.text.concat(), result.reasoning.concat()),
             Err(error) => {
                 warn!(
                     account = target.account_id,
@@ -263,7 +260,7 @@ impl IntelligenceDetectionTask {
                 return Ok(None);
             }
         };
-        let matched = matched_phrases(&text);
+        let matched = matched_phrases(&format!("{reasoning}{text}"));
         let degraded = !matched.is_empty();
         self.detection
             .insert_detection_record(NewDetectionRecord {
@@ -271,6 +268,7 @@ impl IntelligenceDetectionTask {
                 account_id: target.account_id.clone(),
                 degraded,
                 html_content: Some(extract_html_document(&text)),
+                reasoning_content: Some(reasoning),
                 matched_phrases: matched,
             })
             .await
@@ -338,15 +336,56 @@ fn store_error(error: AdminStoreError) -> WorkerTaskError {
     WorkerTaskError::safe(error.to_string())
 }
 
-/// 返回响应文本命中的降智指征；ASCII 大小写不敏感。
+/// 返回响应（思考过程在前、最终答复在后）命中的降智指征。
+///
+/// 匹配前会移除所有 Unicode 空白并转为 ASCII 小写，以覆盖模型常见的中文
+/// 排版变体。除固定词根外，还接受“内嵌/内联”与 `svg` 相距不超过 10 个字符的
+/// 写法；返回值使用规范化标签，便于审计记录说明命中原因。
 #[must_use]
 pub fn matched_phrases(text: &str) -> Vec<String> {
-    let haystack = text.to_ascii_lowercase();
-    DEGRADED_PHRASES
+    let normalized: String = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let direct = [
+        "内嵌svg",
+        "内联svg",
+        "内嵌的svg",
+        "内联的svg",
+        "inlinesvg",
+        "svgandcss",
+    ];
+    let mut matched = direct
         .iter()
-        .filter(|phrase| haystack.contains(&phrase.to_ascii_lowercase()))
+        .filter(|phrase| normalized.contains(**phrase))
         .map(|phrase| (*phrase).to_owned())
-        .collect()
+        .collect::<Vec<_>>();
+    for marker in ["内嵌", "内联"] {
+        if !matched.iter().any(|phrase| phrase.starts_with(marker))
+            && has_nearby_svg(&normalized, marker)
+        {
+            matched.push(format!("{marker}与svg间隔≤10字符"));
+        }
+    }
+    matched
+}
+
+fn has_nearby_svg(text: &str, marker: &str) -> bool {
+    let marker_positions = text.match_indices(marker).map(|(index, _)| index);
+    marker_positions.into_iter().any(|marker_start| {
+        let marker_end = marker_start + marker.len();
+        let after_marker = text
+            .get(marker_end..)
+            .and_then(|suffix| suffix.find("svg").map(|index| marker_end + index));
+        let before_marker = text
+            .get(..marker_start)
+            .and_then(|prefix| prefix.rfind("svg"));
+        after_marker.is_some_and(|svg_start| text[marker_end..svg_start].chars().count() <= 10)
+            || before_marker.is_some_and(|svg_start| {
+                text[svg_start + "svg".len()..marker_start].chars().count() <= 10
+            })
+    })
 }
 
 /// 从响应文本中提取 HTML 文档供检测记录回放；找不到 HTML 结构时保留全文。

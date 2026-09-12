@@ -35,11 +35,32 @@ use gateway_core::{
 use crate::use_case::accounts::{EventLog, FakeAccountStore, FakeProviderAdmin, account_record};
 
 #[test]
-fn matches_degraded_phrases_case_insensitively() {
-    let text = "这里是内嵌 SVG 和 CSS 的说明，还提到了 Inline svg。";
-    let matched = matched_phrases(text);
-    assert_eq!(matched, vec!["内嵌 SVG 和 CSS", "inline SVG"]);
-    assert!(matched_phrases("一切正常的 HTML 动画。").is_empty());
+fn matches_degraded_phrases_after_whitespace_normalization() {
+    for text in [
+        "内嵌SVG和CSS",
+        "内嵌 SVG 和 CSS",
+        "内联SVG",
+        "内联 SVG 和 CSS",
+        "使用内嵌的SVG",
+        "inline SVG",
+        "SVG and CSS",
+        "用内联样式写SVG动画",
+    ] {
+        assert!(
+            !matched_phrases(text).is_empty(),
+            "expected degraded phrase to match: {text}"
+        );
+    }
+    for text in [
+        "<svg viewBox=\"0 0 10 10\"></svg>",
+        "这个 CSS 不要用内联样式",
+        "一切正常的 HTML 动画。",
+    ] {
+        assert!(
+            matched_phrases(text).is_empty(),
+            "expected normal response not to match: {text}"
+        );
+    }
 }
 
 #[test]
@@ -169,6 +190,7 @@ impl AccountProbe for CountingProbe {
             self.active.fetch_sub(1, Ordering::AcqRel);
             Ok(AccountProbeResult {
                 text: vec!["normal response".to_owned()],
+                reasoning: Vec::new(),
             })
         })
     }

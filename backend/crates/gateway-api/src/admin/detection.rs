@@ -170,6 +170,7 @@ pub struct DetectionRecordView {
     pub checked_at: DateTime<Utc>,
     pub degraded: bool,
     pub scheduling_suspended: bool,
+    pub reasoning_content: Option<String>,
 }
 
 impl From<DetectionRecord> for DetectionRecordView {
@@ -185,6 +186,7 @@ impl From<DetectionRecord> for DetectionRecordView {
             checked_at: record.checked_at,
             degraded: record.degraded,
             scheduling_suspended: record.scheduling_suspended,
+            reasoning_content: record.reasoning_content,
         }
     }
 }

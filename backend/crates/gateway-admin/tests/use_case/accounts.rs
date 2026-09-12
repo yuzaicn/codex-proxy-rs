@@ -2187,6 +2187,7 @@ impl AccountProbe for SuccessfulAccountProbe {
         Box::pin(async {
             Ok(AccountProbeResult {
                 text: vec!["OK".to_owned()],
+                reasoning: Vec::new(),
             })
         })
     }
