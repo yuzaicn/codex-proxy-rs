@@ -434,6 +434,10 @@ pub trait SettingsStore: Send + Sync {
 #[async_trait]
 pub trait ResetDetectionStore: Send + Sync {
     async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings>;
+
+    /// 读取最近一条重置卡观测时间，用于跨实例/重启后的轮次间隔判断。
+    async fn latest_reset_detection_observed_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>>;
+
     async fn replace_reset_detection_settings(
         &self,
         command: ReplaceResetDetectionSettings,
@@ -470,6 +474,14 @@ impl ResetDetectionStore for UnavailableResetDetectionStore {
         Err(AdminStoreError::new(
             AdminStoreErrorKind::Unavailable,
             "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn latest_reset_detection_observed_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "latest reset detection timestamp",
             "store is unavailable",
         ))
     }

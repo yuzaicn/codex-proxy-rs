@@ -75,8 +75,9 @@ const DETECTION_WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 const RESET_DETECTION_WORKER_TICK: Duration = Duration::from_secs(30);
 const RESET_DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const RESET_DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
-const RESET_DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
-const RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
+/// 重置卡检测 worker 的 leader lease 生命周期；长轮次由 Host 按 renewal 间隔续租。
+const RESET_DETECTION_WORKER_LEASE_TTL: Duration = Duration::from_secs(30);
+const RESET_DETECTION_WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 
 /// 只用于首次幂等创建默认管理员的启动密码。
 #[derive(Clone, Deserialize)]
@@ -449,7 +450,7 @@ fn detection_worker_contribution(
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 
-/// 重置卡检测 Worker 注册：单副本无 lease 的周期任务，owner 固定为 `reset-detection`。
+/// 重置卡检测 Worker 注册：多实例只允许持有 leader lease 的实例执行，owner 固定为 `reset-detection`。
 fn reset_detection_worker_contribution(
     task: workers::reset_detection::ResetDetectionTask,
 ) -> Result<Vec<WorkerContribution>, AdminError> {
@@ -459,15 +460,17 @@ fn reset_detection_worker_contribution(
         RESET_DETECTION_WORKER_TICK,
         RESET_DETECTION_WORKER_INITIAL_BACKOFF,
         RESET_DETECTION_WORKER_MAXIMUM_BACKOFF,
-        RESET_DETECTION_WORKER_UNUSED_LEASE_TTL,
-        RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL,
+        RESET_DETECTION_WORKER_LEASE_TTL,
+        RESET_DETECTION_WORKER_LEASE_RENEWAL,
     )
     .map_err(|_| AdminError::internal("重置卡检测 Worker 调度参数不合法"))?;
+    let lease = WorkerLeaseRequest::try_new(id.clone(), RESET_DETECTION_WORKER_LEASE_TTL)
+        .map_err(|_| AdminError::internal("重置卡检测 Worker 租约参数不合法"))?;
     let registration = WorkerRegistration::try_new(
         id,
         WorkerRunnable::Scheduled {
             schedule,
-            lease: None,
+            lease: Some(lease),
             task: Box::new(task),
         },
     )
