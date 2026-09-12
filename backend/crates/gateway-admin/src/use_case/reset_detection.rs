@@ -74,26 +74,3 @@ fn validate_reset_detection_settings(
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::validate_reset_detection_settings;
-    use crate::model::reset_detection::{
-        ReplaceResetDetectionSettings, ResetDetectionAccountScope,
-    };
-
-    fn command(interval: u32) -> ReplaceResetDetectionSettings {
-        ReplaceResetDetectionSettings {
-            enabled: false,
-            poll_interval_secs: interval,
-            account_scope: ResetDetectionAccountScope::AllNonError,
-            auto_consume_enabled: false,
-        }
-    }
-
-    #[test]
-    fn poll_interval_29_is_invalid_and_30_is_valid() {
-        assert!(validate_reset_detection_settings(&command(29)).is_err());
-        assert!(validate_reset_detection_settings(&command(30)).is_ok());
-    }
-}

@@ -2,3 +2,4 @@
 
 mod backup;
 mod provider_credentials;
+mod reset_detection;
