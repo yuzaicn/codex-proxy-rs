@@ -35,8 +35,9 @@ use gateway_core::provider_ports::{
     OAuthPendingFlowPort, OAuthPendingPutOutcome, OAuthPendingReleaseOutcome,
     ProviderArtifactProfile, ProviderArtifactProfileCachePort, ProviderCatalogCacheKey,
     ProviderCatalogCachePort, ProviderCooldown, ProviderCooldownPort, ProviderCooldownScope,
-    ProviderCredentialState, ProviderCredentialStatePort, ProviderRefreshPolicy,
-    ProviderRuntimePolicyPort, ProviderScopedCooldown, ProviderStoreError, ProviderStorePorts,
+    ProviderCredentialState, ProviderCredentialStatePort, ProviderLeaseAcquisition,
+    ProviderLeasePort, ProviderLeaseRequest, ProviderRefreshPolicy, ProviderRuntimePolicyPort,
+    ProviderSchedulingState, ProviderScopedCooldown, ProviderStoreError, ProviderStorePorts,
 };
 use gateway_core::routing::{
     ClientRoutingScope, ConfigRevision, FrozenAccountScope, ModelCapabilities, ProviderKind,
@@ -1098,6 +1099,152 @@ async fn openai_rotation_preserves_the_new_access_token_jwt_expiration() {
     assert_eq!(prepared.facts().access_token_expires_at, Some(expires_at));
 }
 
+#[tokio::test]
+async fn openai_rotation_without_refresh_token_preserves_existing_refresh_schedule() {
+    let account_id = "acct_admin_rotation_preserve_refresh";
+    let next_refresh_at = Utc::now() + chrono::Duration::minutes(30);
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: account_id.to_owned(),
+            name: "admin rotation preserve refresh".to_owned(),
+            secret: secret("admin-rotation-preserve-access"),
+            verified_account: profile("chatgpt-admin-rotation-preserve-refresh"),
+            next_refresh_at: Some(next_refresh_at),
+            enabled: true,
+        })
+        .await;
+    let account = store.account(account_id).expect("stored account");
+    let record = account_record(&account);
+    let config = valid_config();
+    let bundle = provider_openai::initialize(
+        config.config.clone(),
+        provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .expect("OpenAI bundle");
+
+    let material = Map::from_iter([(
+        "access_token".to_owned(),
+        Value::String("admin-rotation-access-only".to_owned()),
+    )]);
+    let prepared = bundle
+        .admin_provider()
+        .prepare_rotation(PrepareCredentialRotation {
+            account: record,
+            provider_material: ProviderDocument::new(OpaqueProviderData::new(material)),
+        })
+        .await
+        .expect("access-token-only rotation should be prepared");
+
+    assert!(prepared.facts().has_refresh_token);
+    assert_eq!(prepared.facts().next_refresh_at, Some(next_refresh_at));
+    assert_eq!(
+        prepared
+            .facts()
+            .provider_material
+            .expose_to_provider()
+            .expose_to_provider()["refresh_token"],
+        json!("rt-admin-rotation-preserve-access")
+    );
+}
+
+#[tokio::test]
+async fn openai_rotation_with_refresh_token_overrides_existing_token_and_schedule() {
+    let account_id = "acct_admin_rotation_override_refresh";
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: account_id.to_owned(),
+            name: "admin rotation override refresh".to_owned(),
+            secret: secret("admin-rotation-override-access"),
+            verified_account: profile("chatgpt-admin-rotation-override-refresh"),
+            next_refresh_at: Some(Utc::now() + chrono::Duration::minutes(30)),
+            enabled: true,
+        })
+        .await;
+    let account = store.account(account_id).expect("stored account");
+    let config = valid_config();
+    let bundle = provider_openai::initialize(
+        config.config.clone(),
+        provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .expect("OpenAI bundle");
+
+    let material = Map::from_iter([
+        (
+            "access_token".to_owned(),
+            Value::String("admin-rotation-access-new".to_owned()),
+        ),
+        (
+            "refresh_token".to_owned(),
+            Value::String("admin-rotation-refresh-new".to_owned()),
+        ),
+    ]);
+    let prepared = bundle
+        .admin_provider()
+        .prepare_rotation(PrepareCredentialRotation {
+            account: account_record(&account),
+            provider_material: ProviderDocument::new(OpaqueProviderData::new(material)),
+        })
+        .await
+        .expect("explicit refresh-token rotation should be prepared");
+
+    assert!(prepared.facts().has_refresh_token);
+    assert!(prepared.facts().next_refresh_at.is_none());
+    assert_eq!(
+        prepared
+            .facts()
+            .provider_material
+            .expose_to_provider()
+            .expose_to_provider()["refresh_token"],
+        json!("admin-rotation-refresh-new")
+    );
+}
+
+#[tokio::test]
+async fn openai_refresh_transport_failure_is_ambiguous() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("upstream failure"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let account_id = "acct_admin_refresh_ambiguous";
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: account_id.to_owned(),
+            name: "admin refresh ambiguous".to_owned(),
+            secret: secret("admin-refresh-ambiguous-access"),
+            verified_account: profile("chatgpt-admin-refresh-ambiguous"),
+            next_refresh_at: Some(Utc::now() + chrono::Duration::minutes(30)),
+            enabled: true,
+        })
+        .await;
+    let account = store.account(account_id).expect("stored account");
+    let mut config = valid_config();
+    config.config.auth.oauth_token_endpoint = format!("{}/oauth/token", server.uri());
+    let bundle = provider_openai::initialize(
+        config.config.clone(),
+        provider_ports_with_refresh_lease(store, Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .expect("OpenAI bundle");
+
+    let error = bundle
+        .admin_provider()
+        .prepare_refresh(PrepareCredentialRefresh {
+            account: account_record(&account),
+        })
+        .await
+        .expect_err("transport failure must be returned");
+    assert_eq!(error.kind(), ProviderAdminErrorKind::Ambiguous);
+}
+
 async fn reset_credit_admin(
     server: &MockServer,
 ) -> (
@@ -1225,6 +1372,53 @@ fn provider_ports_with_catalog(
         Arc::new(TestRuntimePolicy),
         pending,
     )
+}
+
+fn provider_ports_with_refresh_lease(
+    accounts: Arc<MemoryAccountStore>,
+    pending: Arc<TestOAuthPending>,
+) -> ProviderStorePorts {
+    ProviderStorePorts::new(
+        accounts,
+        Arc::new(RefreshLeaseCoordinator),
+        Arc::new(MemorySessionAffinity::default()),
+        Arc::new(MemorySessionExclusions::default()),
+        Arc::new(TestCatalogCache::default()),
+        Arc::new(TestArtifactProfiles),
+        Arc::new(TestCredentialState),
+        Arc::new(TestCooldown),
+        Arc::new(TestRuntimePolicy),
+        pending,
+    )
+}
+
+struct RefreshLeaseCoordinator;
+
+impl ProviderLeasePort for RefreshLeaseCoordinator {
+    fn load_state<'a>(
+        &'a self,
+        _: &'a ClientApiKeyId,
+        _: &'a ProviderKind,
+        _: &'a [ProviderAccountId],
+    ) -> BoxFuture<'a, Result<ProviderSchedulingState, ProviderStoreError>> {
+        Box::pin(async { panic!("credential refresh must not load scheduling state") })
+    }
+
+    fn try_acquire(
+        &self,
+        request: ProviderLeaseRequest,
+    ) -> BoxFuture<'_, Result<ProviderLeaseAcquisition, ProviderStoreError>> {
+        Box::pin(async move {
+            match request {
+                ProviderLeaseRequest::RefreshCapacity(_) | ProviderLeaseRequest::Refresh(_) => {
+                    Ok(ProviderLeaseAcquisition::Acquired(Box::new(())))
+                }
+                ProviderLeaseRequest::Scheduling(_) => {
+                    panic!("credential refresh must not acquire scheduling lease")
+                }
+            }
+        })
+    }
 }
 
 fn account_record(account: &ProviderAccount) -> AccountRecord {

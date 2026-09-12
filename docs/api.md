@@ -174,7 +174,7 @@ Responses wire 之间的协议转换层，转换只在 xAI Provider 内完成。
 | `POST` | `/api/admin/accounts/import` | `{ provider, data, settings?, outboundProxyId? }` | 导入或按上游身份更新账号，可同时应用调度、分组设置与默认代理 |
 | `POST` | `/api/admin/accounts/refresh` | `{ accountId }` | 手工刷新 OAuth credential（`idToken` / `accessToken` / `refreshToken`），不刷新额度 |
 | `POST` | `/api/admin/accounts/recover` | `{ accountId }` | 管理员显式清除该账号的本地错误/额度/cooldown 事实并重新启用，不访问上游 |
-| `POST` | `/api/admin/accounts/rotate` | OpenAI rotation 字段 | 手工替换 OpenAI OAuth token |
+| `POST` | `/api/admin/accounts/rotate` | `{ provider: "openai", accountId, accessToken, refreshToken?, idToken? }` | 手工替换 OpenAI OAuth token；仅支持 OpenAI，省略可选 token 字段时保留现有值 |
 | `POST` | `/api/admin/accounts/update` | `{ accountId, enabled, concurrencyLimit, weight, groupIds, outboundProxyId?, outboundProxyUrl? }` | 一次更新账号调度状态、并发上限（`null` 表示继承运行参数）、权重（1–100）、所属分组与出站代理 |
 | `POST` | `/api/admin/accounts/batch-update` | `{ accountIds, enabled, concurrencyLimit, weight, groupIds, outboundProxyId?, outboundProxyUrl? }` | 一次事务统一更新所选账号的调度字段、完整分组集合与可选代理 |
 | `POST` | `/api/admin/accounts/delete` | `{ provider, accountIds }` | 批量删除 1–200 个账号 |
@@ -188,6 +188,8 @@ Responses wire 之间的协议转换层，转换只在 xAI Provider 内完成。
 | `GET` | `/api/admin/accounts/connection-test` | `accountId`、`modelId` | 通过 SSE 返回实时连接测试事件，不作为业务 Responses 用量记录 |
 | `POST` | `/api/admin/accounts/oauth/start` | `{ provider, name, accountId?, outboundProxyId?, outboundProxyUrl? }` | 创建 OpenAI 或 xAI OAuth flow；`accountId` 表示重新授权 |
 | `POST` | `/api/admin/accounts/oauth/complete` | `{ provider, flowId, callbackUrl, settings? }` | 消费 OAuth callback；首次授权可附带账号设置，重新授权保留原设置 |
+
+`POST /api/admin/accounts/rotate` 成功返回 `{ accountId }`；`refreshToken` 与 `idToken` 为可选字段，且该接口仅接受 `provider: "openai"`。
 
 账号列表支持以下稳定值：
 
