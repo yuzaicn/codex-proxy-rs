@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DetectionRecord, DetectionRound } from '@/api'
 import { ChevronDown, Eye, PauseCircle, PlayCircle, RefreshCw } from '@lucide/vue'
-import { computed, onMounted, ref, shallowReactive } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowReactive } from 'vue'
 
 import { getDetectionRecordHtmlUrl, getDetectionRecords, getDetectionRounds, setSchedulingSuspended } from '@/api'
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -26,6 +26,22 @@ const actionBusyKey = ref<string | null>(null)
 const detailModalVisible = ref(false)
 const currentRecord = ref<DetectionRecord | null>(null)
 
+type PreviewStatus = 'idle' | 'loading' | 'rendering' | 'ready' | 'missing' | 'error' | 'timeout'
+
+interface PreviewState {
+  status: PreviewStatus
+  srcdoc?: string
+  controller?: AbortController
+  renderTimeout?: number
+}
+
+const previewStates = reactive<Record<number, PreviewState>>({})
+const previewElements = new Map<number, HTMLElement>()
+let previewObserver: IntersectionObserver | null = null
+
+const PREVIEW_FETCH_TIMEOUT_MS = 8_000
+const PREVIEW_RENDER_TIMEOUT_MS = 4_000
+
 // 空白正文与旧记录的 null 同样按「未采集」展示，避免弹出空 <pre>。
 const currentReasoning = computed(() => {
   const reasoning = currentRecord.value?.reasoning_content
@@ -40,11 +56,176 @@ const currentPrompt = computed(() => {
 
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
+  { key: 'preview', label: '响应预览', kind: 'custom' as const, size: '3xl' as const },
   { key: 'checked_at', label: '检测时间', kind: 'datetime' as const, size: 'xl' as const },
   { key: 'degraded', label: '结论', kind: 'status' as const, size: 'md' as const, align: 'center' as const },
   { key: 'scheduling_suspended', label: '调度状态', kind: 'status' as const, size: 'md' as const, align: 'center' as const },
   { key: 'actions', label: '操作', kind: 'actions' as const, size: '2xl' as const },
 ]
+
+function getPreviewState(recordId: number): PreviewState {
+  return previewStates[recordId] ?? (previewStates[recordId] = { status: 'idle' })
+}
+
+function previewStatusLabel(status: PreviewStatus) {
+  switch (status) {
+    case 'loading':
+      return '正在加载预览…'
+    case 'rendering':
+      return '正在渲染预览…'
+    case 'missing':
+      return '该记录没有 HTML 效果'
+    case 'error':
+      return '预览加载失败'
+    case 'timeout':
+      return '预览渲染超时'
+    default:
+      return '响应效果预览'
+  }
+}
+
+function previewDocument(html: string) {
+  const cspMeta = '<meta http-equiv="Content-Security-Policy" content="sandbox allow-scripts">'
+  if (/<head\b[^>]*>/i.test(html))
+    return html.replace(/<head\b[^>]*>/i, match => `${match}${cspMeta}`)
+  return `<!doctype html><html><head>${cspMeta}</head><body>${html}</body></html>`
+}
+
+function clearPreviewTimeout(state: PreviewState) {
+  if (state.renderTimeout !== undefined) {
+    window.clearTimeout(state.renderTimeout)
+    state.renderTimeout = undefined
+  }
+}
+
+function cancelPreviewLoad(recordId: number) {
+  const state = getPreviewState(recordId)
+  if (state.status !== 'loading' && state.status !== 'rendering')
+    return
+  clearPreviewTimeout(state)
+  state.controller?.abort()
+  state.controller = undefined
+  state.srcdoc = undefined
+  state.status = 'idle'
+}
+
+function cancelRoundPreviewLoads(roundId: string) {
+  for (const record of recordsByRound[roundId] ?? [])
+    cancelPreviewLoad(record.id)
+}
+
+async function loadPreview(record: DetectionRecord) {
+  const state = getPreviewState(record.id)
+  if (state.status !== 'idle')
+    return
+
+  const controller = new AbortController()
+  state.controller = controller
+  state.status = 'loading'
+  const fetchTimeout = window.setTimeout(() => {
+    if (state.status === 'loading') {
+      state.status = 'timeout'
+      controller.abort()
+    }
+  }, PREVIEW_FETCH_TIMEOUT_MS)
+
+  try {
+    const response = await fetch(getDetectionRecordHtmlUrl(record.id), {
+      credentials: 'same-origin',
+      signal: controller.signal,
+    })
+    if (response.status === 404 || response.status === 204) {
+      state.status = 'missing'
+      return
+    }
+    if (!response.ok) {
+      state.status = 'error'
+      return
+    }
+
+    const html = await response.text()
+    if (!html.trim()) {
+      state.status = 'missing'
+      return
+    }
+
+    state.srcdoc = previewDocument(html)
+    state.status = 'rendering'
+    state.renderTimeout = window.setTimeout(() => {
+      if (state.status === 'rendering') {
+        state.status = 'timeout'
+        controller.abort()
+      }
+    }, PREVIEW_RENDER_TIMEOUT_MS)
+  }
+  catch {
+    if (!controller.signal.aborted)
+      state.status = 'error'
+  }
+  finally {
+    window.clearTimeout(fetchTimeout)
+    if (state.controller === controller)
+      state.controller = undefined
+  }
+}
+
+function onPreviewFrameLoad(recordId: number) {
+  const state = getPreviewState(recordId)
+  if (state.status !== 'rendering')
+    return
+  clearPreviewTimeout(state)
+  state.status = 'ready'
+}
+
+function onPreviewFrameError(recordId: number) {
+  const state = getPreviewState(recordId)
+  if (state.status !== 'rendering')
+    return
+  clearPreviewTimeout(state)
+  state.status = 'error'
+}
+
+function handlePreviewKeydown(record: DetectionRecord, event: KeyboardEvent) {
+  if (event.key !== 'Enter' && event.key !== ' ')
+    return
+  event.preventDefault()
+  viewDetail(record)
+}
+
+function registerPreviewElement(element: unknown, record: DetectionRecord, roundId: string) {
+  const previous = previewElements.get(record.id)
+  if (previous && previous !== element)
+    previewObserver?.unobserve(previous)
+  if (!(element instanceof HTMLElement)) {
+    previewElements.delete(record.id)
+    return
+  }
+  previewElements.set(record.id, element)
+  element.dataset.previewRecordId = String(record.id)
+  element.dataset.previewRoundId = roundId
+  previewObserver?.observe(element)
+}
+
+function createPreviewObserver() {
+  if (typeof window === 'undefined' || !('IntersectionObserver' in window))
+    return
+  previewObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const element = entry.target as HTMLElement
+      const recordId = Number(element.dataset.previewRecordId)
+      const roundId = element.dataset.previewRoundId
+      const record = (roundId ? recordsByRound[roundId] : undefined)?.find(item => item.id === recordId)
+      if (!record || !roundId)
+        continue
+      if (entry.isIntersecting && openRounds.value.has(roundId))
+        void loadPreview(record)
+      else if (!entry.isIntersecting)
+        cancelPreviewLoad(recordId)
+    }
+  }, { rootMargin: '0px' })
+  for (const element of previewElements.values())
+    previewObserver.observe(element)
+}
 
 async function loadRounds() {
   roundsLoading.value = true
@@ -93,6 +274,7 @@ function toggleRound(round: DetectionRound, event: Event) {
   }
   else {
     next.delete(round.detection_round_id)
+    cancelRoundPreviewLoads(round.detection_round_id)
   }
   openRounds.value = next
 }
@@ -128,7 +310,15 @@ function viewDetail(record: DetectionRecord) {
 }
 
 onMounted(() => {
+  createPreviewObserver()
   void loadRounds()
+})
+
+onBeforeUnmount(() => {
+  for (const recordId of Object.keys(previewStates))
+    cancelPreviewLoad(Number(recordId))
+  previewObserver?.disconnect()
+  previewObserver = null
 })
 </script>
 
@@ -221,6 +411,45 @@ onMounted(() => {
             >
               <template #account="{ row }">
                 <AccountIdentityCell :account="accountIdentity(row)" size="md" title-mode="email" />
+              </template>
+              <template #preview="{ row }">
+                <div
+                  class="flex min-w-0 items-center gap-2"
+                  :aria-label="`${previewStatusLabel(getPreviewState(row.id).status)}，点击查看详情`"
+                >
+                  <div
+                    class="relative h-[150px] w-[240px] shrink-0 cursor-pointer overflow-hidden rounded-cp border border-cp-border-secondary bg-cp-bg-elevated outline-none transition-[border-color,box-shadow] hover:border-cp-primary-border focus-visible:border-cp-control-outline focus-visible:ring-2 focus-visible:ring-cp-control-outline motion-reduce:transition-none"
+                    role="button"
+                    :ref="element => registerPreviewElement(element, row, round.detection_round_id)"
+                    tabindex="0"
+                    @click="viewDetail(row)"
+                    @keydown="handlePreviewKeydown(row, $event)"
+                  >
+                    <iframe
+                      v-if="getPreviewState(row.id).status === 'rendering' || getPreviewState(row.id).status === 'ready'"
+                      :srcdoc="getPreviewState(row.id).srcdoc"
+                      sandbox="allow-scripts"
+                      title="检测响应缩略预览"
+                      aria-hidden="true"
+                      class="pointer-events-none absolute left-0 top-0 h-[600px] w-[960px] origin-top-left scale-25 border-0"
+                      @load="onPreviewFrameLoad(row.id)"
+                      @error="onPreviewFrameError(row.id)"
+                    />
+                    <div
+                      v-if="getPreviewState(row.id).status !== 'rendering' && getPreviewState(row.id).status !== 'ready'"
+                      class="absolute inset-0 grid place-items-center p-3 text-center text-cp-xs font-emphasis text-cp-text-secondary"
+                    >
+                      <span>{{ previewStatusLabel(getPreviewState(row.id).status) }}</span>
+                    </div>
+                    <span
+                      class="absolute bottom-2 left-2 rounded-cp-sm px-2 py-1 text-cp-xs font-bold shadow-[0_1px_3px_var(--cp-color-shadow)]"
+                      :class="row.degraded ? 'bg-cp-error-container text-cp-error-on-container' : 'bg-cp-success-container text-cp-success-on-container'"
+                    >
+                      {{ row.degraded ? '降智' : '不降智' }}
+                    </span>
+                  </div>
+                  <span class="sr-only">{{ row.degraded ? '该账号判定为降智' : '该账号判定为不降智' }}</span>
+                </div>
               </template>
               <template #checked_at="{ row }">
                 <span class="whitespace-nowrap font-mono text-cp-sm text-cp-text-secondary">{{ formatDateTime(row.checked_at) }}</span>
