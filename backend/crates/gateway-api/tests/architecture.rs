@@ -52,6 +52,7 @@ fn source_tree_should_match_frozen_machine_manifest() {
         "src/admin/observability/wire.rs",
         "src/admin/presenter.rs",
         "src/admin/proxies.rs",
+        "src/admin/reset_detection.rs",
         "src/admin/settings.rs",
         "src/admin/system.rs",
         "src/admin/wire.rs",

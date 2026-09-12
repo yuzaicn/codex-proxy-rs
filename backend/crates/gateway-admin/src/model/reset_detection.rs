@@ -4,6 +4,15 @@ use super::Revision;
 
 pub const MIN_POLL_INTERVAL_SECS: u32 = 30;
 
+/// `reset_detection_settings.account_scope` 的稳定取值。
+///
+/// 本层只做不透明存取；轮询 Worker(GUCH-129)消费时按账号状态投影
+/// (`AccountStatusProjection`,优先级 disabled → error → quota_exhausted →
+/// rate_limited → normal)展开:
+///
+/// - `all_non_error` = {normal, quota_exhausted, rate_limited}
+/// - `normal` = {normal}
+/// - `limited` = {quota_exhausted, rate_limited}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetDetectionAccountScope {
     AllNonError,
