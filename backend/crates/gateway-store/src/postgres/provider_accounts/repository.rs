@@ -844,7 +844,6 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            upstream_user_id,
            (coalesce(upstream_account_id, ''))
          ) do update set
-           name = excluded.name,
            email = excluded.email,
            plan_type = excluded.plan_type,
            authentication_kind = excluded.authentication_kind,
@@ -855,7 +854,6 @@ pub(crate) async fn upsert_provider_account_in_transaction(
            has_refresh_token = excluded.has_refresh_token,
            access_token_expires_at = excluded.access_token_expires_at,
            next_refresh_at = excluded.next_refresh_at,
-           enabled = excluded.enabled,
            credential_state = excluded.credential_state,
            provider_quota_json = null,
            quota_access_state = 'unknown',

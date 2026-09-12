@@ -1535,7 +1535,7 @@ async fn terminal_admin_delete_removes_enabled_accounts_in_one_transaction() {
 }
 
 #[tokio::test]
-async fn admin_import_updates_the_same_verified_identity_without_rebinding_it() {
+async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_renaming_it() {
     let Some(database) = TestDatabase::create("provider_account_admin_upsert").await else {
         return;
     };
@@ -1594,7 +1594,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_it() 
     .fetch_one(&database.pool)
     .await
     .expect("load updated import");
-    assert_eq!(row.0, "updated import");
+    // Re-import refreshes credentials, but deliberately preserves the user's existing name.
+    assert_eq!(row.0, "acct_admin_upsert");
     assert_eq!(row.1["access_token"], "updated-import-secret");
     assert_eq!(row.2, 2);
     assert!(
@@ -2221,6 +2222,12 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
         .await
         .expect("import account without a group");
     assert_eq!(imported.config_revision.get(), 2);
+    let enabled: bool = sqlx::query_scalar("select enabled from provider_accounts where id = $1")
+        .bind("acct_grouped_import")
+        .fetch_one(&database.pool)
+        .await
+        .expect("load newly imported account state");
+    assert!(enabled, "newly imported accounts start enabled");
     assert!(
         account_group_ids(&database.pool, "acct_grouped_import")
             .await
@@ -2240,11 +2247,20 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
     .execute(&database.pool)
     .await
     .expect("assign existing account group");
-    sqlx::query("update provider_accounts set concurrency_limit = 9, weight = 40 where id = $1")
-        .bind("acct_grouped_import")
-        .execute(&database.pool)
-        .await
-        .expect("set account scheduling before reimport");
+    sqlx::query(
+        "update provider_accounts
+         set name = 'User-defined account name',
+             enabled = false,
+             scheduling_suspended = true,
+             scheduling_suspended_by = 'manual',
+             concurrency_limit = 9,
+             weight = 40
+         where id = $1",
+    )
+    .bind("acct_grouped_import")
+    .execute(&database.pool)
+    .await
+    .expect("set account scheduling before reimport");
     repository
         .import_provider_accounts(ImportProviderAccounts {
             settings: None,
@@ -2255,13 +2271,26 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
         })
         .await
         .expect("reimport existing identity");
-    let scheduling: (Option<i64>, i16) =
-        sqlx::query_as("select concurrency_limit, weight from provider_accounts where id = $1")
-            .bind("acct_grouped_import")
-            .fetch_one(&database.pool)
-            .await
-            .expect("load preserved scheduling");
-    assert_eq!(scheduling, (Some(9), 40));
+    let preserved: (String, bool, bool, Option<String>, Option<i64>, i16) = sqlx::query_as(
+        "select name, enabled, scheduling_suspended, scheduling_suspended_by,
+                concurrency_limit, weight
+         from provider_accounts where id = $1",
+    )
+    .bind("acct_grouped_import")
+    .fetch_one(&database.pool)
+    .await
+    .expect("load preserved account settings");
+    assert_eq!(
+        preserved,
+        (
+            "User-defined account name".to_owned(),
+            false,
+            true,
+            Some("manual".to_owned()),
+            Some(9),
+            40,
+        )
+    );
     assert_eq!(
         account_group_ids(&database.pool, "acct_grouped_import").await,
         [GROUP_ID]
