@@ -351,7 +351,7 @@ const {
                 <AccountQuotaPanel
                   :account="row"
                   :refreshing="refreshingQuotaAccountIds.has(row.id)"
-                  @account-updated="replaceAccount"
+                  @account-updated="void replaceAccount($event)"
                   @refresh-quota="handleRefreshQuota"
                 />
                 <AccountUsagePanel :account="row" />
