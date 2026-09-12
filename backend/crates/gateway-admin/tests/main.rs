@@ -22,6 +22,7 @@ use gateway_admin::{
 mod backup;
 mod model;
 mod use_case;
+mod workers;
 
 #[test]
 fn revision_should_reject_zero() {

@@ -276,7 +276,8 @@ fn store_error(error: AdminStoreError) -> WorkerTaskError {
 }
 
 /// 返回响应文本命中的降智指征；ASCII 大小写不敏感。
-fn matched_phrases(text: &str) -> Vec<String> {
+#[must_use]
+pub fn matched_phrases(text: &str) -> Vec<String> {
     let haystack = text.to_ascii_lowercase();
     DEGRADED_PHRASES
         .iter()
@@ -286,7 +287,8 @@ fn matched_phrases(text: &str) -> Vec<String> {
 }
 
 /// 从响应文本中提取 HTML 文档供检测记录回放；找不到 HTML 结构时保留全文。
-fn extract_html_document(text: &str) -> String {
+#[must_use]
+pub fn extract_html_document(text: &str) -> String {
     if let Some(fenced) = extract_fenced_html(text) {
         return fenced;
     }
@@ -313,38 +315,4 @@ fn extract_fenced_html(text: &str) -> Option<String> {
     let end = body.find("```").unwrap_or(body.len());
     let content = body[..end].trim();
     (!content.is_empty()).then(|| content.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{extract_html_document, matched_phrases};
-
-    #[test]
-    fn matches_degraded_phrases_case_insensitively() {
-        let text = "这里是内嵌 SVG 和 CSS 的说明，还提到了 Inline svg。";
-        let matched = matched_phrases(text);
-        assert_eq!(matched, vec!["内嵌 SVG 和 CSS", "inline SVG"]);
-        assert!(matched_phrases("一切正常的 HTML 动画。").is_empty());
-    }
-
-    #[test]
-    fn extracts_fenced_html_block_first() {
-        let text = "说明\n```html\n<!DOCTYPE html><html><body>ok</body></html>\n```\n结尾";
-        assert_eq!(
-            extract_html_document(text),
-            "<!DOCTYPE html><html><body>ok</body></html>"
-        );
-    }
-
-    #[test]
-    fn extracts_bare_html_document() {
-        let text = "前置说明 <HTML><body>x</body></HTML> 之后的内容";
-        assert_eq!(extract_html_document(text), "<HTML><body>x</body></HTML>");
-    }
-
-    #[test]
-    fn keeps_full_text_without_html_structure() {
-        let text = "纯文字答复，没有任何标记。";
-        assert_eq!(extract_html_document(text), text);
-    }
 }
