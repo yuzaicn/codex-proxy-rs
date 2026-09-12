@@ -773,7 +773,7 @@ impl AccountStore for FakeAccountStore {
                 .into_iter()
                 .map(|credential| credential.account_id)
                 .collect(),
-            inserted_count: 0,
+            created_count: 0,
             updated_count: 0,
             failures,
         })

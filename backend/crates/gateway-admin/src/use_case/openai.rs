@@ -111,7 +111,7 @@ impl OpenAiService for DefaultOpenAiService {
                 // No credentials were committed, so the configuration revision is unchanged.
                 config_revision: Revision::new(1).expect("positive revision"),
                 credential_ids: Vec::new(),
-                inserted_count: 0,
+                created_count: 0,
                 updated_count: 0,
                 failures,
             });

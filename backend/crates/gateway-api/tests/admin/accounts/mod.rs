@@ -661,7 +661,7 @@ mod actions {
         let response = AccountImportData::from_result(CredentialImportResult {
             config_revision: Revision::new(8).expect("revision"),
             credential_ids: vec![ProviderAccountId::new("acct_imported").expect("account ID")],
-            inserted_count: 1,
+            created_count: 1,
             updated_count: 0,
             failures: vec![CredentialImportFailure {
                 index: 2,
@@ -675,10 +675,10 @@ mod actions {
             json!({
                 "importedCount": 1,
                 "accountIds": ["acct_imported"],
-                "insertedCount": 1,
+                "createdCount": 1,
                 "updatedCount": 0,
                 "failures": [{
-                    "index": 3,
+                    "index": 2,
                     "code": "refresh_rejected",
                     "retryable": false,
                     "message": "该令牌已失效，请更换"
