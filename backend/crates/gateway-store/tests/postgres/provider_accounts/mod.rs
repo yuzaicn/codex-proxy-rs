@@ -2221,6 +2221,12 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
         .await
         .expect("import account without a group");
     assert_eq!(imported.config_revision.get(), 2);
+    let enabled: bool = sqlx::query_scalar("select enabled from provider_accounts where id = $1")
+        .bind("acct_grouped_import")
+        .fetch_one(&database.pool)
+        .await
+        .expect("load newly imported account state");
+    assert!(enabled, "newly imported accounts start enabled");
     assert!(
         account_group_ids(&database.pool, "acct_grouped_import")
             .await
@@ -2240,11 +2246,20 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
     .execute(&database.pool)
     .await
     .expect("assign existing account group");
-    sqlx::query("update provider_accounts set concurrency_limit = 9, weight = 40 where id = $1")
-        .bind("acct_grouped_import")
-        .execute(&database.pool)
-        .await
-        .expect("set account scheduling before reimport");
+    sqlx::query(
+        "update provider_accounts
+         set name = 'User-defined account name',
+             enabled = false,
+             scheduling_suspended = true,
+             scheduling_suspended_by = 'manual',
+             concurrency_limit = 9,
+             weight = 40
+         where id = $1",
+    )
+    .bind("acct_grouped_import")
+    .execute(&database.pool)
+    .await
+    .expect("set account scheduling before reimport");
     repository
         .import_provider_accounts(ImportProviderAccounts {
             settings: None,
@@ -2255,13 +2270,26 @@ async fn provider_account_import_and_reauthorization_preserve_existing_membershi
         })
         .await
         .expect("reimport existing identity");
-    let scheduling: (Option<i64>, i16) =
-        sqlx::query_as("select concurrency_limit, weight from provider_accounts where id = $1")
-            .bind("acct_grouped_import")
-            .fetch_one(&database.pool)
-            .await
-            .expect("load preserved scheduling");
-    assert_eq!(scheduling, (Some(9), 40));
+    let preserved: (String, bool, bool, Option<String>, Option<i64>, i16) = sqlx::query_as(
+        "select name, enabled, scheduling_suspended, scheduling_suspended_by,
+                concurrency_limit, weight
+         from provider_accounts where id = $1",
+    )
+    .bind("acct_grouped_import")
+    .fetch_one(&database.pool)
+    .await
+    .expect("load preserved account settings");
+    assert_eq!(
+        preserved,
+        (
+            "User-defined account name".to_owned(),
+            false,
+            true,
+            Some("manual".to_owned()),
+            Some(9),
+            40,
+        )
+    );
     assert_eq!(
         account_group_ids(&database.pool, "acct_grouped_import").await,
         [GROUP_ID]
