@@ -193,10 +193,11 @@ impl PgDetectionStore {
 
     async fn load_targets(&self, scope: &DetectionAccountScope) -> StoreResult<Vec<TargetRow>> {
         let rows = match scope {
+            // 全量范围只探测仍启用的账号：禁用账号不参与调度，探测只烧配额。
             DetectionAccountScope::AllAccounts => {
                 sqlx::query_as::<_, TargetRow>(
                     "select id, provider_kind, scheduling_suspended, scheduling_suspended_by
-                     from provider_accounts order by id",
+                     from provider_accounts where enabled = true order by id",
                 )
                 .fetch_all(&self.pool)
                 .await
