@@ -123,6 +123,7 @@ pub(crate) async fn load_admin_account_page(
                 a.scheduling_suspended_by, a.concurrency_limit, a.weight,
                 a.credential_state, a.quota_access_state, a.quota_evidence,
                 a.quota_access_observed_at, a.quota_reset_at, a.last_error_reason,
+                a.reset_credits_available_count, a.reset_credits_observed_at,
                 a.last_error_message, a.credential_observed_at, a.created_at, a.updated_at,
                 filtered_total.filtered_total,
                 global_summary.summary_total, global_summary.summary_normal,

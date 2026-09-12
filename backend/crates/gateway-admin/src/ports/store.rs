@@ -40,6 +40,9 @@ use crate::model::{
         CredentialListQuery, CredentialMutationResult, CredentialPage, CredentialRotationCommit,
         ProviderExportCredentialInput,
     },
+    reset_detection::{
+        ReplaceResetDetectionSettings, ResetDetectionSettings, ResetDetectionSettingsMutation,
+    },
     settings::{AdminApiKey, AdminApiKeyMutation, ReplaceRuntimeSettings, RuntimeSettings},
 };
 
@@ -424,6 +427,41 @@ pub trait SettingsStore: Send + Sync {
     ) -> AdminStoreResult<AdminApiKeyMutation>;
 }
 
+#[async_trait]
+pub trait ResetDetectionStore: Send + Sync {
+    async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings>;
+    async fn replace_reset_detection_settings(
+        &self,
+        command: ReplaceResetDetectionSettings,
+        context: &MutationContext,
+    ) -> AdminStoreResult<ResetDetectionSettingsMutation>;
+}
+
+struct UnavailableResetDetectionStore;
+
+#[async_trait]
+impl ResetDetectionStore for UnavailableResetDetectionStore {
+    async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn replace_reset_detection_settings(
+        &self,
+        _command: ReplaceResetDetectionSettings,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<ResetDetectionSettingsMutation> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+}
+
 /// 账号目录、运行态与分组所需的 Store 能力集合。
 #[derive(Clone)]
 pub struct AdminAccountStorePorts {
@@ -461,6 +499,7 @@ pub struct AdminStorePorts {
     observability: Arc<dyn ObservabilityStore>,
     settings: Arc<dyn SettingsStore>,
     detection: Arc<dyn DetectionStore>,
+    reset_detection: Arc<dyn ResetDetectionStore>,
     backup: BackupStorePorts,
 }
 
@@ -482,8 +521,34 @@ impl AdminStorePorts {
             observability,
             settings,
             detection,
+            reset_detection: Arc::new(UnavailableResetDetectionStore),
             backup,
         }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_reset_detection(
+        accounts: AdminAccountStorePorts,
+        auth: Arc<dyn AuthStore>,
+        client_keys: Arc<dyn ClientKeyStore>,
+        observability: Arc<dyn ObservabilityStore>,
+        settings: Arc<dyn SettingsStore>,
+        detection: Arc<dyn DetectionStore>,
+        reset_detection: Arc<dyn ResetDetectionStore>,
+        backup: BackupStorePorts,
+    ) -> Self {
+        let mut ports = Self::new(
+            accounts,
+            auth,
+            client_keys,
+            observability,
+            settings,
+            detection,
+            backup,
+        );
+        ports.reset_detection = reset_detection;
+        ports
     }
 
     #[must_use]
@@ -529,6 +594,11 @@ impl AdminStorePorts {
     #[must_use]
     pub fn detection(&self) -> Arc<dyn DetectionStore> {
         self.detection.clone()
+    }
+
+    #[must_use]
+    pub fn reset_detection(&self) -> Arc<dyn ResetDetectionStore> {
+        self.reset_detection.clone()
     }
 
     #[must_use]

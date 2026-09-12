@@ -2144,6 +2144,8 @@ pub(crate) fn account_record(kind: &str) -> AccountRecord {
         credential_state: CredentialState::Ready,
         credential_observed_at: now,
         quota: QuotaState::allowed(now.into()),
+        reset_credits_available_count: None,
+        reset_credits_observed_at: None,
         last_error_reason: None,
         last_error_message: None,
         created_at: now,

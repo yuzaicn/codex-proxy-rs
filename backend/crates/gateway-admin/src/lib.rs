@@ -27,7 +27,8 @@ pub use use_case::{
     backup::BackupService, client_distribution::ClientDistributionService,
     client_keys::ClientKeyService, detection::DetectionService,
     observability::ObservabilityService, openai::OpenAiService, proxies::ProxiesService,
-    settings::SettingsService, system::SystemService, xai::XaiService,
+    reset_detection::ResetDetectionService, settings::SettingsService, system::SystemService,
+    xai::XaiService,
 };
 
 use model::{AdminError, AdminErrorKind};
@@ -42,8 +43,8 @@ use use_case::{
     auth::DefaultAuthService, backup::DefaultBackupService,
     client_distribution::DefaultClientDistributionService, client_keys::DefaultClientKeyService,
     detection::DefaultDetectionService, observability::DefaultObservabilityService,
-    openai::DefaultOpenAiService, settings::DefaultSettingsService, system::DefaultSystemService,
-    xai::DefaultXaiService,
+    openai::DefaultOpenAiService, reset_detection::DefaultResetDetectionService,
+    settings::DefaultSettingsService, system::DefaultSystemService, xai::DefaultXaiService,
 };
 
 const OPENAI_PROVIDER_KIND: &str = "openai";
@@ -168,6 +169,7 @@ pub struct AdminServices {
     client_distribution: Arc<dyn ClientDistributionService>,
     observability: Arc<dyn ObservabilityService>,
     settings: Arc<dyn SettingsService>,
+    reset_detection: Arc<dyn ResetDetectionService>,
     detection: Arc<dyn DetectionService>,
     system: Arc<dyn SystemService>,
     openai: Arc<dyn OpenAiService>,
@@ -214,6 +216,11 @@ impl AdminServices {
     #[must_use]
     pub fn settings(&self) -> &dyn SettingsService {
         self.settings.as_ref()
+    }
+
+    #[must_use]
+    pub fn reset_detection(&self) -> &dyn ResetDetectionService {
+        self.reset_detection.as_ref()
     }
 
     #[must_use]
@@ -340,6 +347,10 @@ pub async fn initialize(
         )),
         settings: Arc::new(DefaultSettingsService::new(
             store.settings(),
+            snapshot.clone(),
+        )),
+        reset_detection: Arc::new(DefaultResetDetectionService::new(
+            store.reset_detection(),
             snapshot.clone(),
         )),
         detection: Arc::new(DefaultDetectionService::new(

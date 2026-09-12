@@ -174,6 +174,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     account.weight, account.credential_state, account.quota_access_state,
                     account.quota_evidence, account.quota_access_observed_at,
                     account.quota_reset_at, account.last_error_reason,
+                    account.reset_credits_available_count, account.reset_credits_observed_at,
                     account.last_error_message, account.credential_observed_at,
                     account.created_at, account.updated_at,
                     settings.max_concurrent_per_account

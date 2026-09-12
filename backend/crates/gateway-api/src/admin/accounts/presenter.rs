@@ -70,6 +70,15 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
     let added_at = china_rfc3339(&account.created_at);
     let updated_at = china_rfc3339(&account.updated_at);
     let (quota, refresh_token_expires_at) = account_quota_view(quota, rate_limited_until, now);
+    let reset_credits = account
+        .reset_credits_available_count
+        .zip(account.reset_credits_observed_at)
+        .map(
+            |(available_count, observed_at)| AccountResetCreditsObservationView {
+                available_count,
+                observed_at: china_rfc3339(&observed_at),
+            },
+        );
     AccountView {
         id: account.id.clone(),
         name: account.name,
@@ -118,6 +127,7 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
         updated_at,
         updated_at_display: china_datetime(&account.updated_at),
         quota,
+        reset_credits,
         usage: account_usage_view(usage, now),
     }
 }

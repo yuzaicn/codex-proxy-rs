@@ -305,7 +305,7 @@ HTTP validation
 `config_revision` 并写入脱敏审计。Admin mutation 不要求客户端提交 revision；少数账号/分组响应
 返回已提交的 `configRevision`，不将它当作乐观并发前置条件。
 
-额度、cooldown、目录 generation、请求统计和自动 credential refresh 属于运行时观测，不推进全局
+额度、cooldown、目录 generation、重置卡观测、请求统计和自动 credential refresh 属于运行时观测，不推进全局
 revision；credential 轮换只推进账号自己的 `credential_revision`。Redis 通知用于缩短收敛延迟，
 PostgreSQL 周期对账才是正确性基础。
 
@@ -317,7 +317,7 @@ PostgreSQL 周期对账才是正确性基础。
 | Client Key 金额窗口与费用事件 | PostgreSQL | 准入与幂等结算的权威账本，独立于请求观测与日志保留策略 |
 | admission、lease、cooldown、circuit、会话亲和、continuation、OAuth pending、目录 cache | Redis | 可重建、可过期的协调状态 |
 | 日志、OAuth 恢复记录、在线更新状态、备份暂存 | `.runtime/` | 部署节点本地运行文件 |
-| 重置卡库存与消费结果 | OpenAI upstream | 后端不建立本地卡库存；前端只保留当前浏览器会话的最近查询 |
+| 重置卡库存与消费结果 | OpenAI upstream；后端 `provider_accounts` 最近一次观测 | 后端持久化最近观测的张数与观测时间，作为运行时事实不推进 `config_revision`；权威仍是 OpenAI upstream |
 | Provider 公开模型与请求画像 | Provider/runtime cache | 由官方目录或发布源刷新，不写成第二份业务配置 |
 | Windows 安装包临时直链 | Host 进程内短缓存 | 按需解析、严格校验、到期前丢弃；不写 PostgreSQL/Redis，也不代理包字节 |
 

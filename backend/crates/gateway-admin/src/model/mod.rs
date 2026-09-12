@@ -12,6 +12,7 @@ pub mod detection;
 pub mod observability;
 pub mod provider_credentials;
 pub mod proxies;
+pub mod reset_detection;
 pub mod settings;
 pub mod system;
 

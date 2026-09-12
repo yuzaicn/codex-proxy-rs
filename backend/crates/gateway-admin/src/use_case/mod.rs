@@ -10,6 +10,7 @@ pub mod detection;
 pub mod observability;
 pub mod openai;
 pub mod proxies;
+pub mod reset_detection;
 pub mod settings;
 pub mod system;
 pub mod xai;

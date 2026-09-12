@@ -1479,6 +1479,8 @@ fn account_record(account: &ProviderAccount) -> AccountRecord {
         credential_state: account.credential_state(),
         credential_observed_at: now,
         quota: account.quota(),
+        reset_credits_available_count: None,
+        reset_credits_observed_at: None,
         last_error_reason: account.last_error_reason(),
         last_error_message: None,
         created_at: now,

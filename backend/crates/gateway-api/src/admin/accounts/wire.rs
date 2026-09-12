@@ -271,7 +271,36 @@ pub struct AccountView {
     pub updated_at: String,
     pub updated_at_display: String,
     pub quota: AccountQuotaView,
+    pub reset_credits: Option<AccountResetCreditsObservationView>,
     pub usage: AccountUsageView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountResetCreditsObservationView {
+    pub available_count: u64,
+    pub observed_at: String,
+}
+
+#[cfg(test)]
+mod reset_credits_tests {
+    use super::AccountResetCreditsObservationView;
+
+    #[test]
+    fn observation_serializes_camel_case_and_preserves_zero() {
+        let value = serde_json::to_value(AccountResetCreditsObservationView {
+            available_count: 0,
+            observed_at: "2026-09-12T08:00:00Z".to_owned(),
+        })
+        .expect("serialize reset credits observation");
+        assert_eq!(value["availableCount"], 0);
+        assert_eq!(value["observedAt"], "2026-09-12T08:00:00Z");
+        assert!(
+            serde_json::to_value(Option::<AccountResetCreditsObservationView>::None)
+                .expect("serialize missing observation")
+                .is_null()
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
