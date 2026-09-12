@@ -42,6 +42,17 @@ export interface TokenImportRow {
   entry: Record<string, unknown> | null
 }
 
+// 汇总条与完成提示共用的口径：失败=退避耗尽可手动重试；还需要你处理=需要处理/未识别/重复。
+export function tokenImportSummary(rows: TokenImportRow[]) {
+  return {
+    pending: rows.filter(row => row.status === 'pending').length,
+    success: rows.filter(row => row.status === 'success').length,
+    failed: rows.filter(row => row.status === 'failed').length,
+    needsAction: rows.filter(row => row.status === 'needs_action').length,
+    actionNeeded: rows.filter(row => row.status === 'needs_action' || row.status === 'duplicate' || row.kind === 'unknown').length,
+  }
+}
+
 export function useAccountOnboarding(options: {
   reload: () => Promise<unknown>
 }) {
@@ -77,7 +88,7 @@ export function useAccountOnboarding(options: {
       await creatingAccountAction.run(
         async () => {
           const message = await importOpenAiTokenRows()
-          if (tokenRows.value.some(row => row.status === 'failed'))
+          if (tokenRows.value.some(row => row.status === 'failed' || row.status === 'needs_action'))
             toast.error(message)
           else
             toast.success(message)
@@ -228,11 +239,17 @@ export function useAccountOnboarding(options: {
       throw new Error('没有可导入的凭据')
     await runTokenImport(candidates)
     await options.reload()
-    const failures = rows.filter(row => row.status === 'failed' || row.status === 'needs_action')
-    if (failures.length > 0)
-      return `已导入 ${rows.filter(row => row.status === 'success').length} 个账号，${failures.length} 行失败`
+    const summary = tokenImportSummary(rows)
+    if (summary.failed > 0 || summary.needsAction > 0) {
+      const parts = [`已导入 ${summary.success} 个账号`]
+      if (summary.failed > 0)
+        parts.push(`失败 ${summary.failed} 行`)
+      if (summary.actionNeeded > 0)
+        parts.push(`还需要你处理 ${summary.actionNeeded} 行`)
+      return parts.join('，')
+    }
     showCreateModal.value = false
-    return `已导入 ${rows.filter(row => row.status === 'success').length} 个账号`
+    return `已导入 ${summary.success} 个账号`
   }
 
   async function runTokenImport(rows: TokenImportRow[]) {

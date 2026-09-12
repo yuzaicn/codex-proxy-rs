@@ -2,13 +2,13 @@
 import type { TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
 import { Copy, RefreshCw, Trash2, Upload } from '@lucide/vue'
 import { useFileDialog } from '@vueuse/core'
-import { onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
 import BaseTextarea from '@/components/base/BaseTextarea.vue'
-import { maskToken } from '../../composables/useAccountOnboarding'
+import { maskToken, tokenImportSummary } from '../../composables/useAccountOnboarding'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   label: string
   placeholder: string
   uploadable: boolean
@@ -24,6 +24,7 @@ const emit = defineEmits<{
   setUnknownKind: [kind: TokenImportKind]
 }>()
 const text = defineModel<string>({ required: true })
+const summary = computed(() => props.rows ? tokenImportSummary(props.rows) : undefined)
 const fileError = ref('')
 const { open: openFile, onChange } = useFileDialog({ accept: 'application/json,.json', multiple: false, reset: true })
 
@@ -82,7 +83,7 @@ function updateKind(row: TokenImportRow, event: Event) {
     />
     <template v-if="rows">
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-cp-border bg-cp-bg-muted px-3 py-2 text-xs text-cp-text-secondary">
-        <span>待导入 {{ rows.filter(row => row.status === 'pending').length }} · 成功 {{ rows.filter(row => row.status === 'success').length }} · 失败 {{ rows.filter(row => row.status === 'failed').length }} · 还需要你处理 {{ rows.filter(row => row.status === 'needs_action' || row.kind === 'unknown' || row.status === 'duplicate').length }} 行</span>
+        <span v-if="summary">待导入 {{ summary.pending }} · 成功 {{ summary.success }} · 失败 {{ summary.failed }} · 还需要你处理 {{ summary.actionNeeded }} 行</span>
         <div class="flex flex-wrap gap-2">
           <BaseButton v-if="rows.some(row => row.kind === 'unknown')" size="sm" variant="secondary" :disabled="disabled" @click="emit('setUnknownKind', 'rt')">
             未识别设为 RT
