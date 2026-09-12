@@ -1476,6 +1476,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
         .await
         .expect("create imported account");
     assert_eq!(imported.account_ids, ["acct_admin_upsert"]);
+    assert_eq!(imported.inserted_count, 1);
+    assert_eq!(imported.updated_count, 0);
     sqlx::query(
         "update provider_accounts
          set provider_quota_json = '{}'::jsonb, quota_observed_at = now(), updated_at = now()
@@ -1500,6 +1502,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
         .await
         .expect("update the same imported identity");
     assert_eq!(imported.account_ids, ["acct_admin_upsert"]);
+    assert_eq!(imported.inserted_count, 0);
+    assert_eq!(imported.updated_count, 1);
     let revision = imported.config_revision;
     assert_eq!(revision.get(), 3);
     let row: (
