@@ -259,10 +259,14 @@ export function useAccountOnboarding(options: {
           outboundProxyId: createForm.value.proxyMode === 'proxy' ? createForm.value.proxyId.trim() : undefined,
           data: { accounts: [row.entry] },
         })
-        const responseError = importResponseFailure(result)
-        if (responseError) {
-          row.status = 'failed'
-          row.error = responseError
+        const failure = importResponseFailure(result)
+        if (failure) {
+          if (failure.retryable && attempt < 3) {
+            await wait(1000 * 2 ** attempt)
+            continue
+          }
+          row.status = failure.retryable ? 'failed' : 'needs_action'
+          row.error = failure.message
         }
         else if (result.importedCount > 0) {
           row.status = 'success'
@@ -450,11 +454,11 @@ function importFailureMessage(error: unknown) {
   return errorMessage(error, '导入失败')
 }
 
-function importResponseFailure(result: { results?: Array<{ outcome?: string, error?: string | null }> }) {
-  const outcome = result.results?.[0]
-  if (!outcome || outcome.outcome === 'success' || outcome.outcome === 'imported' || outcome.outcome === 'created' || outcome.outcome === 'updated')
-    return ''
-  return outcome.error || '导入失败'
+function importResponseFailure(result: { failures?: Array<{ code: string, retryable: boolean, message: string }> }) {
+  const failure = result.failures?.[0]
+  if (!failure)
+    return null
+  return failure
 }
 
 function isAmbiguousImportError(error: unknown) {

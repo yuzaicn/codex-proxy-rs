@@ -243,14 +243,13 @@ export interface AccountModelsResponse {
 export interface AccountImportResponse {
   importedCount: number
   accountIds: string[]
-  createdCount?: number
+  insertedCount?: number
   updatedCount?: number
-  results?: Array<{
-    outcome: string
-    accountId?: string
-    name?: string | null
-    email?: string | null
-    error?: string | null
+  failures?: Array<{
+    index: number
+    code: string
+    retryable: boolean
+    message: string
   }>
 }
 
