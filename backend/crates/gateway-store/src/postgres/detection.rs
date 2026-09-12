@@ -43,7 +43,7 @@ type RecordRow = (
     Option<String>,
     Option<String>,
 );
-type RoundRow = (String, DateTime<Utc>, i64, i64);
+type RoundRow = (String, DateTime<Utc>, i64, i64, Option<i64>);
 type TargetRow = (String, String, bool, Option<String>);
 
 /// 降智检测配置与检测记录的 PostgreSQL adapter。
@@ -183,7 +183,9 @@ impl PgDetectionStore {
             "select detection_round_id::text,
                     max(checked_at),
                     count(*) filter (where degraded),
-                    count(*) filter (where not degraded)
+                    count(*) filter (where not degraded),
+                    case when count(suspension_released) = 0 then null
+                         else count(*) filter (where suspension_released) end
              from intelligence_detection_records
              group by detection_round_id
              order by max(checked_at) desc
@@ -233,8 +235,8 @@ impl PgDetectionStore {
     async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
         sqlx::query(
             "insert into intelligence_detection_records
-             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases)
-             values ($1::uuid, $2, $3, $4, $5, $6, $7)",
+             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases, suspension_released)
+             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(record.detection_round_id.to_string())
         .bind(&record.account_id)
@@ -243,9 +245,17 @@ impl PgDetectionStore {
         .bind(record.reasoning_content.as_deref())
         .bind(record.prompt_used.as_deref())
         .bind(record.matched_phrases.as_slice())
+        .bind(record.suspension_released)
         .execute(&self.pool)
         .await
         .map_err(|_| postgres_unavailable("insert detection record"))?;
+        Ok(())
+    }
+
+    async fn mark_released(&self, round_id: Uuid, account_id: &str) -> StoreResult<()> {
+        sqlx::query("update intelligence_detection_records set suspension_released = true where detection_round_id = $1 and account_id = $2")
+            .bind(round_id.to_string()).bind(account_id).execute(&self.pool).await
+            .map_err(|_| postgres_unavailable("mark suspension released"))?;
         Ok(())
     }
 }
@@ -316,6 +326,16 @@ impl DetectionStore for PgDetectionStore {
             .map_err(|error| admin_store_error(ENTITY, error))
     }
 
+    async fn mark_suspension_released(
+        &self,
+        round_id: Uuid,
+        account_id: &str,
+    ) -> AdminStoreResult<()> {
+        self.mark_released(round_id, account_id)
+            .await
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
     async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>> {
         self.load_record_html(record_id)
             .await
@@ -368,13 +388,17 @@ fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
 }
 
 fn detection_round_from_row(row: RoundRow) -> StoreResult<DetectionRound> {
-    let (detection_round_id, checked_at, degraded_count, normal_count) = row;
+    let (detection_round_id, checked_at, degraded_count, normal_count, recovered_count) = row;
     Ok(DetectionRound {
         detection_round_id: parse_round_id(&detection_round_id)?,
         checked_at,
         degraded_count: u64::try_from(degraded_count)
             .map_err(|_| invalid("negative degraded count"))?,
         normal_count: u64::try_from(normal_count).map_err(|_| invalid("negative normal count"))?,
+        recovered_count: recovered_count
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| invalid("negative recovered count"))?,
     })
 }
 

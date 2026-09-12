@@ -92,6 +92,7 @@ pub struct DetectionRound {
     pub checked_at: DateTime<Utc>,
     pub degraded_count: u64,
     pub normal_count: u64,
+    pub recovered_count: Option<u64>,
 }
 
 /// 检测 Worker 视角的一个待探测账号及其当前调度暂停事实。
@@ -113,4 +114,5 @@ pub struct NewDetectionRecord {
     pub reasoning_content: Option<String>,
     pub prompt_used: Option<String>,
     pub matched_phrases: Vec<String>,
+    pub suspension_released: bool,
 }

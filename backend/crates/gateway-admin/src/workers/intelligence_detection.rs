@@ -288,6 +288,7 @@ impl IntelligenceDetectionTask {
                 reasoning_content: Some(reasoning),
                 prompt_used: Some(prompt.to_owned()),
                 matched_phrases: matched,
+                suspension_released: false,
             })
             .await
             .map_err(store_error)?;
@@ -320,6 +321,15 @@ impl IntelligenceDetectionTask {
             .set_scheduling_suspended(account_id, suspension, &context)
             .await
             .map_err(store_error)?;
+        if suspension.is_none() {
+            if let Err(error) = self
+                .detection
+                .mark_suspension_released(round_id, &target.account_id)
+                .await
+            {
+                warn!(account = target.account_id, %round_id, error = %error, "标记检测恢复失败");
+            }
+        }
         if let Ok(provider) = self.providers.require(&target.provider_kind) {
             provider
                 .account_facts_changed(std::slice::from_ref(account_id))

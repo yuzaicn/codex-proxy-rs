@@ -401,6 +401,15 @@ pub trait DetectionStore: Send + Sync {
 
     /// 检测 Worker 追加一条检测记录；观测数据不参与配置 revision 与审计。
     async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()>;
+
+    /// 标记本轮实际解除检测来源调度暂停的记录。
+    async fn mark_suspension_released(
+        &self,
+        _round_id: uuid::Uuid,
+        _account_id: &str,
+    ) -> AdminStoreResult<()> {
+        Ok(())
+    }
 }
 
 /// Runtime settings 与管理员 API Key 写入。
