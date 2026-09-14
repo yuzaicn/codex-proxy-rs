@@ -118,6 +118,68 @@ fn encoder_should_remove_unsupported_fields_from_upstream_body() {
 }
 
 #[test]
+fn astra_encoder_should_remove_unsupported_reasoning_mode_only() {
+    let request = request(Map::from_iter([
+        ("model".to_owned(), json!("client-model")),
+        ("input".to_owned(), json!("hello")),
+        (
+            "reasoning".to_owned(),
+            json!({"mode": "auto", "effort": "high", "summary": "detailed"}),
+        ),
+    ]));
+
+    let encoded = encode_generate_request(&request, "gpt-6-astra").expect("encode Astra");
+    let body = Value::Object(encoded.body().clone());
+
+    assert_eq!(body.pointer("/reasoning/mode"), None);
+    assert_eq!(body.pointer("/reasoning/effort"), Some(&json!("high")));
+    assert_eq!(body.pointer("/reasoning/summary"), Some(&json!("detailed")));
+}
+
+#[test]
+fn astra_encoder_should_drop_reasoning_when_mode_was_its_only_field() {
+    let request = request(Map::from_iter([
+        ("model".to_owned(), json!("client-model")),
+        ("input".to_owned(), json!("hello")),
+        ("reasoning".to_owned(), json!({"mode": "auto"})),
+    ]));
+
+    let encoded = encode_generate_request(&request, "gpt-6-astra").expect("encode Astra");
+
+    assert!(encoded.body().get("reasoning").is_none());
+}
+
+#[test]
+fn non_astra_encoder_should_preserve_reasoning_mode() {
+    let request = request(Map::from_iter([
+        ("model".to_owned(), json!("client-model")),
+        ("input".to_owned(), json!("hello")),
+        ("reasoning".to_owned(), json!({"mode": "auto"})),
+    ]));
+
+    let encoded = encode_generate_request(&request, "gpt-5.4").expect("encode model");
+
+    assert_eq!(
+        Value::Object(encoded.body().clone()).pointer("/reasoning/mode"),
+        Some(&json!("auto"))
+    );
+}
+
+#[test]
+fn astra_snapshot_encoder_should_remove_reasoning_mode() {
+    let request = request(Map::from_iter([
+        ("model".to_owned(), json!("client-model")),
+        ("input".to_owned(), json!("hello")),
+        ("reasoning".to_owned(), json!({"mode": "auto"})),
+    ]));
+
+    let encoded =
+        encode_generate_request(&request, "gpt-6-astra-2026-09-14").expect("encode Astra");
+
+    assert!(encoded.body().get("reasoning").is_none());
+}
+
+#[test]
 fn encoder_should_preserve_client_store_intent() {
     let request = request(Map::from_iter([
         ("model".to_owned(), json!("client-model")),

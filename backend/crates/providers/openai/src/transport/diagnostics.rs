@@ -65,6 +65,7 @@ const PERSISTABLE_UPSTREAM_CODES: &[&str] = &[
     "unauthorized",
     "unsupported",
     "unsupported_feature",
+    "unsupported_value",
     "usage_limit_reached",
     "verification_required",
     "websocket_connection_limit_reached",
@@ -401,6 +402,16 @@ fn classify_upstream_failure(
     let identity_authorization = normalized(identity_authorization_error);
     let message = fields.message.to_ascii_lowercase();
     let body = body.to_ascii_lowercase();
+
+    // `unsupported_value` 描述的是请求字段值，而不是模型本身不可路由。它的
+    // message 往往同时包含 "not supported" 与 "model"，必须先于宽泛的模型
+    // 不支持文本启发式判定，否则会被错误标成可换号的 ModelUnsupported。
+    if status == Some(StatusCode::BAD_REQUEST)
+        && error_type == "invalid_request_error"
+        && code == "unsupported_value"
+    {
+        return CodexFailureCategory::InvalidRequest;
+    }
 
     // 与官方 Codex HTTP/WS 路径一致：429 只有结构化
     // `error.type=usage_limit_reached` 才能确认额度窗口耗尽；其余 429 都是临时限流。

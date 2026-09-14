@@ -3026,6 +3026,57 @@ fn ambiguous_send_state_stops_retry() {
 }
 
 #[test]
+fn deterministic_unsupported_value_stops_after_one_account() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let upstream_error =
+        ProviderError::new(ProviderErrorKind::InvalidRequest, UpstreamSendState::Sent)
+            .with_status(400)
+            .with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
+                "reasoning.mode is not supported with this model",
+                Some("unsupported_value".to_owned()),
+                Some("invalid_request_error".to_owned()),
+            ));
+    let (coordinator, store, provider) = coordinator(vec![
+        Script::Stream {
+            account_id: "acct_first",
+            items: vec![Err(upstream_error)],
+        },
+        Script::Stream {
+            account_id: "acct_second",
+            items: complete_stream(None),
+        },
+    ]);
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .expect("start execution");
+
+    let error = block_on(session.collect_uncommitted())
+        .expect_err("deterministic invalid request must be terminal");
+    let EngineError::Provider(error) = error else {
+        panic!("expected provider error");
+    };
+
+    assert_eq!(error.kind(), ProviderErrorKind::InvalidRequest);
+    assert_eq!(error.upstream_status(), Some(400));
+    assert!(!error.replay_is_safe());
+    assert!(error.pre_delivery_retry().is_none());
+    assert_eq!(provider.contexts.lock().expect("contexts lock").len(), 1);
+    assert_eq!(provider.scripts.lock().expect("scripts lock").len(), 1);
+    let state = store.state.lock().expect("store lock");
+    assert_eq!(state.attempts.len(), 1);
+    assert_eq!(state.intermediate_failures, 0);
+    assert_eq!(state.finalizations[0].attempt_count, 1);
+    assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Failed);
+}
+
+#[test]
 fn ambiguous_pre_delivery_retry_marker_does_not_rotate_account() {
     let operation = generate_operation();
     let route_plan = plan(&operation);
