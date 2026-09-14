@@ -195,6 +195,24 @@ fn bare_http_429_remains_a_temporary_rate_limit() {
 }
 
 #[test]
+fn unsupported_reasoning_value_is_a_terminal_invalid_request() {
+    let status = reqwest::StatusCode::BAD_REQUEST;
+    let failure = CodexUpstreamFailure::from_response(
+        status,
+        r#"{"type":"error","error":{"type":"invalid_request_error","code":"unsupported_value","message":"`reasoning.mode` is not supported with this model.","param":"reasoning.mode"},"status":400}"#,
+        None,
+        &CodexUpstreamDiagnostics::with_status(status.as_u16()),
+        None,
+        &[],
+        &[],
+        CodexUpstreamSendPhase::AfterPayload,
+    );
+
+    assert_eq!(failure.category(), CodexFailureCategory::InvalidRequest);
+    assert!(!failure.replay_is_safe());
+}
+
+#[test]
 fn openai_account_failure_matrix_is_preserved() {
     let cases = [
         (

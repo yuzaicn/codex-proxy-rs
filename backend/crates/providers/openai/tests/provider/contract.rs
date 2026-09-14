@@ -965,6 +965,52 @@ async fn truncated_http_stream_allows_account_rotation_only_before_client_delive
 }
 
 #[tokio::test]
+async fn unsupported_value_response_is_terminal_and_preserves_its_structured_code() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_provider_contract").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "unsupported_value",
+                "message": "`reasoning.mode` is not supported with this model.",
+                "param": "reasoning.mode"
+            },
+            "status": 400
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut stream = provider_with_base_url(&store, server.uri())
+        .execute(
+            planned_request("openai", http_generate_operation()),
+            context("req_unsupported_value", CancellationToken::new()),
+        )
+        .await
+        .expect("prepare HTTP stream");
+    let error = loop {
+        match stream.next().await {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => break error,
+            None => panic!("unsupported value must surface a typed failure"),
+        }
+    };
+
+    assert_eq!(error.kind(), ProviderErrorKind::InvalidRequest);
+    assert_eq!(error.upstream_status(), Some(400));
+    assert_eq!(
+        error.upstream_code().map(|code| code.as_str()),
+        Some("unsupported_value")
+    );
+    assert!(!error.replay_is_safe());
+    assert!(error.pre_delivery_retry().is_none());
+}
+
+#[tokio::test]
 async fn openai_provider_keeps_a_compaction_trigger_as_a_regular_generate_request() {
     let store = Arc::new(MemoryAccountStore::default());
     let operation = Operation::Generate(GenerateRequest::from_protocol_payload(

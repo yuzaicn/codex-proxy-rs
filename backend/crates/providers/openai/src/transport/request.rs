@@ -21,6 +21,7 @@ const TURN_ID_CLIENT_METADATA_KEY: &str = "turn_id";
 const THREAD_SPAWN_SUBAGENT_KIND: &str = "thread_spawn";
 const THREAD_SPAWN_CONVERSATION_PREFIX: &str = "thread-spawn:";
 const UNSUPPORTED_CODEX_RESPONSES_FIELDS: &[&str] = &["max_output_tokens", "temperature"];
+const REASONING_MODE_UNSUPPORTED_MODEL_PREFIXES: &[&str] = &["gpt-6-astra"];
 
 const CROSS_ACCOUNT_IDENTITY_KEYS: &[&str] = &[
     "authorization",
@@ -113,6 +114,36 @@ fn adapt_codex_responses_body(body: &mut Map<String, Value>, upstream_model: &st
     for field in UNSUPPORTED_CODEX_RESPONSES_FIELDS {
         body.remove(*field);
     }
+    apply_model_reasoning_capabilities(body, upstream_model);
+}
+
+fn apply_model_reasoning_capabilities(body: &mut Map<String, Value>, upstream_model: &str) {
+    if !REASONING_MODE_UNSUPPORTED_MODEL_PREFIXES
+        .iter()
+        .any(|prefix| model_family_matches(upstream_model, prefix))
+    {
+        return;
+    }
+
+    // Astra 支持 reasoning 的其他公开选项，但会确定性拒绝 `mode`；模型改写时
+    // 在 Provider 能力边界移除该字段，避免同一请求被错误地跨账号重放。
+    let remove_empty_reasoning = body
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|reasoning| {
+            reasoning.remove("mode");
+            reasoning.is_empty()
+        });
+    if remove_empty_reasoning {
+        body.remove("reasoning");
+    }
+}
+
+fn model_family_matches(model: &str, prefix: &str) -> bool {
+    model == prefix
+        || model
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('-'))
 }
 
 fn extract_request_context(request: &mut CodexResponsesRequest) {
