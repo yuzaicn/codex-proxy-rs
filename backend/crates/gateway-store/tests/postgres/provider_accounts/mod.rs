@@ -1546,6 +1546,52 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
 }
 
 #[tokio::test]
+async fn admin_import_mixed_batch_counts_created_and_updated_in_submission_order() {
+    let Some(database) = TestDatabase::create("provider_account_admin_mixed_upsert").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    repository
+        .insert_provider_account(account(
+            "acct_admin_mixed_existing",
+            "user-admin-mixed-existing",
+        ))
+        .await
+        .expect("seed existing imported identity");
+
+    let mut existing = account("acct_admin_mixed_candidate", "user-admin-mixed-existing");
+    existing.provider_credentials_json = credential_json("mixed-updated-secret");
+    let imported = repository
+        .import_provider_accounts(ImportProviderAccounts {
+            settings: None,
+            outbound_proxy: None,
+            scope: ProviderAccountAdminScope {
+                provider_kind: "openai".to_owned(),
+            },
+            accounts: vec![
+                existing,
+                account("acct_admin_mixed_new", "user-admin-mixed-new"),
+            ],
+            audit: audit(
+                "audit_admin_mixed_upsert",
+                "import",
+                "acct_admin_mixed_existing,acct_admin_mixed_new",
+            ),
+        })
+        .await
+        .expect("import mixed created and updated identities");
+
+    assert_eq!(imported.created_count, 1);
+    assert_eq!(imported.updated_count, 1);
+    assert_eq!(
+        imported.account_ids,
+        ["acct_admin_mixed_existing", "acct_admin_mixed_new"]
+    );
+
+    database.close().await;
+}
+
+#[tokio::test]
 async fn authorization_create_returns_existing_account_id_when_identity_is_upserted() {
     let Some(database) = TestDatabase::create("provider_account_authorization_upsert").await else {
         return;
