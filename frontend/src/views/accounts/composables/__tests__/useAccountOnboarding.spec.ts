@@ -145,10 +145,15 @@ describe('importTokenRow 自动重试判定', () => {
 })
 
 describe('sub2api 导出解析', () => {
-  it('CLIProxyAPI codex 单文件可直接识别，proxy_url 归一化且展示身份', () => {
+  it('cliProxyAPI codex 单文件可直接识别，proxy_url 归一化且展示身份', () => {
     const rows = parseOpenAiTokenRows(JSON.stringify({
-      type: 'codex', access_token: 'at-codex', refresh_token: 'rt-codex', id_token: 'e30.eyJzdWIiOiIxIn0.sig',
-      email: 'codex@example.test', account_id: 'acct-codex', proxy_url: 'http://proxy.test:8080',
+      type: 'codex',
+      access_token: 'at-codex',
+      refresh_token: 'rt-codex',
+      id_token: 'e30.eyJzdWIiOiIxIn0.sig',
+      email: 'codex@example.test',
+      account_id: 'acct-codex',
+      proxy_url: 'http://proxy.test:8080',
     }))
     expect(rows[0]).toMatchObject({ kind: 'at', status: 'pending', email: 'codex@example.test', accountId: 'acct-codex', proxyUrl: 'http://proxy.test:8080' })
     expect(rows[0].entry).toMatchObject({ outbound_proxy_url: 'http://proxy.test:8080' })
@@ -163,7 +168,7 @@ describe('sub2api 导出解析', () => {
     }))
   })
 
-  it('CLIProxyAPI gemini/claude/antigravity 类型被拦截', () => {
+  it('cliProxyAPI gemini/claude/antigravity 类型被拦截', () => {
     const rows = parseOpenAiTokenRows(JSON.stringify([
       { type: 'gemini', access_token: 'at-gemini' },
       { type: 'claude', access_token: 'at-claude' },

@@ -743,7 +743,7 @@ function flattenJson(value: unknown, raw: string, inheritedProxies: Record<strin
     return value.flatMap(item => flattenJson(item, JSON.stringify(item), inheritedProxies))
   if (isRecord(value) && Array.isArray(value.accounts)) {
     const proxies = Array.isArray(value.proxies) ? value.proxies.filter(isRecord) : inheritedProxies
-    return value.accounts.flatMap(item => {
+    return value.accounts.flatMap((item) => {
       if (!isRecord(item))
         return flattenJson(item, JSON.stringify(item), proxies)
       const key = typeof item.proxy_key === 'string' ? item.proxy_key : ''
