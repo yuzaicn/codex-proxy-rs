@@ -11,10 +11,12 @@ import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
 import BaseForm from '@/components/base/BaseForm/index.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
+import BaseSelect from '@/components/base/BaseSelect.vue'
 import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import { toast } from '@/components/base/BaseToast'
 import { useSettingsStore } from '@/stores/modules/settings'
 import { errorMessage } from '@/utils/async'
+import { normalizeReasoningEffort, REASONING_EFFORT_OPTIONS } from './detection-options'
 
 const props = defineProps<{
   active?: boolean
@@ -32,6 +34,7 @@ const form = reactive({
   accountIds: [] as string[],
   intervalSecs: '3600',
   model: '',
+  reasoningEffort: 'auto' as DetectionConfig['reasoning_effort'],
 })
 
 const selectedCount = computed(() => form.accountIds.length)
@@ -44,6 +47,7 @@ function applyConfig(config: DetectionConfig) {
   form.accountIds = 'account_ids' in scope ? [...scope.account_ids] : []
   form.intervalSecs = Number.isFinite(config.interval_secs) ? String(config.interval_secs) : '3600'
   form.model = config.model ?? ''
+  form.reasoningEffort = normalizeReasoningEffort(config.reasoning_effort)
 }
 
 async function loadAccounts() {
@@ -115,6 +119,7 @@ function buildPayload(): DetectionConfig | null {
     account_scope: form.allAccounts ? { all: true } : { account_ids: [...form.accountIds] },
     interval_secs: intervalSecs,
     model,
+    reasoning_effort: form.reasoningEffort,
   }
 }
 
@@ -229,6 +234,15 @@ watch(
 
         <BaseFormItem label="检测模型" description="用于检测请求的模型名称">
           <BaseInput v-model="form.model" aria-label="检测模型" placeholder="例如 gpt-5" :disabled="!form.enabled || loading" />
+        </BaseFormItem>
+
+        <BaseFormItem label="推理强度" description="自动档会按模型目录选择支持的最高档位">
+          <BaseSelect
+            v-model="form.reasoningEffort"
+            aria-label="推理强度"
+            :options="REASONING_EFFORT_OPTIONS"
+            :disabled="!form.enabled || loading"
+          />
         </BaseFormItem>
       </BaseForm>
     </div>

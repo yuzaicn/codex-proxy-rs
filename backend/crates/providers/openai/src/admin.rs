@@ -220,8 +220,9 @@ impl ProviderAdmin for OpenAiAdminProvider {
         &self,
         upstream_model: &UpstreamModelId,
         input_text: &str,
+        reasoning_effort: &str,
     ) -> Result<Operation, ProviderAdminError> {
-        build_detection_operation(upstream_model, input_text)
+        build_detection_operation(upstream_model, input_text, reasoning_effort)
     }
 
     fn dashboard_wire_profile(&self) -> Option<DashboardWireProfile> {
@@ -1285,20 +1286,22 @@ fn build_connection_test_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
 ) -> Result<Operation, ProviderAdminError> {
-    build_operation(upstream_model, input_text, false)
+    build_operation(upstream_model, input_text, false, "")
 }
 
 fn build_detection_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
+    reasoning_effort: &str,
 ) -> Result<Operation, ProviderAdminError> {
-    build_operation(upstream_model, input_text, true)
+    build_operation(upstream_model, input_text, true, reasoning_effort)
 }
 
 fn build_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
     include_reasoning_summary: bool,
+    reasoning_effort: &str,
 ) -> Result<Operation, ProviderAdminError> {
     let mut body = Map::new();
     body.insert(
@@ -1321,7 +1324,7 @@ fn build_operation(
         // inspect the model's reasoning instead of only its final text.
         body.insert(
             "reasoning".to_owned(),
-            serde_json::json!({"effort": "high", "summary": "detailed"}),
+            serde_json::json!({"effort": reasoning_effort, "summary": "detailed"}),
         );
     }
     let payload = ProtocolPayload::json_object("openai", body)
