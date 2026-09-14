@@ -1,10 +1,13 @@
 import request from '../request'
 
+export type ReasoningEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 export interface DetectionConfig {
   enabled: boolean
   account_scope: { all: true } | { account_ids: string[] }
   interval_secs: number
   model: string
+  reasoning_effort: ReasoningEffort
 }
 
 export interface DetectionRound {
@@ -32,6 +35,8 @@ export interface DetectionRecord {
   reasoning_content?: string | null
   // 本轮实际使用的探测提示词（动物逐轮随机），同为 0007 新增可空列，复核判定时对照。
   prompt_used?: string | null
+  // 触发降智结论的可审计判词标签；旧记录可能没有该字段。
+  matched_phrases?: string[] | null
 }
 
 export function getDetectionConfig() {

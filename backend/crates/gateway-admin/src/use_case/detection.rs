@@ -23,6 +23,7 @@ use super::{map_store_error, publish_committed};
 const MIN_INTERVAL_SECS: u32 = 60;
 const MAX_INTERVAL_SECS: u32 = 86_400;
 const MAX_MODEL_BYTES: usize = 256;
+const MAX_REASONING_EFFORT_BYTES: usize = 32;
 const MAX_SELECTED_ACCOUNTS: usize = 1000;
 const MAX_RECORD_PAGE_SIZE: u32 = 500;
 const ROUNDS_LIMIT: u32 = 200;
@@ -149,6 +150,13 @@ fn normalize_config(command: ReplaceDetectionConfig) -> Result<ReplaceDetectionC
     if command.enabled && model.is_empty() {
         return Err(AdminError::invalid("启用检测前必须填写检测模型"));
     }
+    let reasoning_effort = command.reasoning_effort.trim().to_ascii_lowercase();
+    if reasoning_effort.is_empty()
+        || reasoning_effort.len() > MAX_REASONING_EFFORT_BYTES
+        || reasoning_effort.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(AdminError::invalid("检测推理档位不合法"));
+    }
     let account_scope = match command.account_scope {
         DetectionAccountScope::AllAccounts => DetectionAccountScope::AllAccounts,
         DetectionAccountScope::SelectedAccounts { account_ids } => {
@@ -174,5 +182,6 @@ fn normalize_config(command: ReplaceDetectionConfig) -> Result<ReplaceDetectionC
         account_scope,
         interval_secs: command.interval_secs,
         model,
+        reasoning_effort,
     })
 }

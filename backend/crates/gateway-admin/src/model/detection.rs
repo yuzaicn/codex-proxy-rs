@@ -23,6 +23,7 @@ pub struct DetectionConfig {
     pub account_scope: DetectionAccountScope,
     pub interval_secs: u32,
     pub model: String,
+    pub reasoning_effort: String,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -35,6 +36,7 @@ impl DetectionConfig {
             account_scope: DetectionAccountScope::AllAccounts,
             interval_secs: 3600,
             model: String::new(),
+            reasoning_effort: "auto".to_owned(),
             updated_at,
         }
     }
@@ -47,6 +49,7 @@ pub struct ReplaceDetectionConfig {
     pub account_scope: DetectionAccountScope,
     pub interval_secs: u32,
     pub model: String,
+    pub reasoning_effort: String,
 }
 
 /// 检测配置替换结果。
@@ -75,6 +78,8 @@ pub struct DetectionRecord {
     pub reasoning_content: Option<String>,
     /// 本轮实际发送给模型的提示词。
     pub prompt_used: Option<String>,
+    /// 触发降智结论的可审计标签。
+    pub matched_phrases: Vec<String>,
 }
 
 /// 检测记录分页查询；页码从 1 开始。

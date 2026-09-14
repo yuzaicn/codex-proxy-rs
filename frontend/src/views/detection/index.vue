@@ -15,6 +15,7 @@ import { toast } from '@/components/base/BaseToast'
 import { errorMessage } from '@/utils/async'
 import { formatDateTime } from '@/utils/date'
 import AccountIdentityCell from '@/views/accounts/components/AccountIdentityCell.vue'
+import { normalizeMatchedPhrases } from './presentation'
 
 const rounds = ref<DetectionRound[]>([])
 const roundsLoading = ref(true)
@@ -53,6 +54,8 @@ const currentPrompt = computed(() => {
   const prompt = currentRecord.value?.prompt_used
   return prompt?.trim() ? prompt : null
 })
+
+const currentMatchedPhrases = computed(() => normalizeMatchedPhrases(currentRecord.value?.matched_phrases))
 
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
@@ -516,6 +519,23 @@ onBeforeUnmount(() => {
             class="mt-2 mb-0 whitespace-pre-wrap wrap-break-word font-mono text-cp-sm leading-[1.65] text-cp-text"
             v-text="currentPrompt"
           />
+        </div>
+        <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+          <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+            命中判词
+          </p>
+          <div v-if="currentMatchedPhrases.length > 0" class="mt-2 flex flex-wrap gap-1.5">
+            <span
+              v-for="phrase in currentMatchedPhrases"
+              :key="phrase"
+              class="inline-flex max-w-full rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold wrap-break-word text-cp-error-on-container"
+            >
+              {{ phrase }}
+            </span>
+          </div>
+          <p v-else class="mt-2 mb-0 text-cp-sm font-emphasis text-cp-text-quaternary">
+            {{ currentRecord.degraded ? '该记录未保存命中判词' : '未命中判词' }}
+          </p>
         </div>
         <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
           <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">

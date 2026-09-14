@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -8,13 +8,17 @@ use futures::future::BoxFuture;
 
 use gateway_core::account::{AccountSelectionPolicy, RotationStrategy};
 use gateway_core::engine::provider::ProviderRegistry;
+use gateway_core::operation::OperationKind;
 use gateway_core::policy::{ClientApiKeyId, PlaintextClientApiKey, RateLimits};
 use gateway_core::routing::snapshot::{
     RuntimeSnapshotCompiler, SnapshotAccountGroupFacts, SnapshotAccountGroupMemberFacts,
     SnapshotClientPolicyFacts, SnapshotFacts, SnapshotProviderAccountFacts, SnapshotSettingsFacts,
     SnapshotStoreError, SnapshotStorePort,
 };
-use gateway_core::routing::{ConfigRevision, RuntimeSnapshot};
+use gateway_core::routing::{
+    ConfigRevision, ModelCapabilities, ModelPresentation, ProviderKind, ProviderModel,
+    RuntimeSnapshot, UpstreamModelId,
+};
 use gateway_core::runtime::{
     RuntimeSnapshotHandle, RuntimeSnapshotPublisher, SnapshotControl, SnapshotRevisionStream,
     SnapshotSubscriptionError, SnapshotSubscriptionPort, runtime_revision_needs_refresh,
@@ -93,6 +97,41 @@ fn handle_should_keep_request_snapshot_frozen_across_publish() {
 
     assert_eq!(frozen.revision().get(), 1);
     assert_eq!(handle.revision().map(ConfigRevision::get), Some(2));
+}
+
+#[test]
+fn handle_should_expose_catalog_reasoning_efforts_for_the_exact_model() {
+    let provider = ProviderKind::new("openai").expect("provider");
+    let model = UpstreamModelId::new("gpt-5.6-terra").expect("model");
+    let presentation = ModelPresentation::new(None, None).with_reasoning(
+        Some("medium".to_owned()),
+        vec!["low".to_owned(), "high".to_owned(), "max".to_owned()],
+    );
+    let snapshot = RuntimeSnapshot::new(
+        revision(1),
+        AccountSelectionPolicy::new(
+            RotationStrategy::Smart,
+            NonZeroU32::new(1).expect("positive concurrency"),
+            Duration::ZERO,
+        ),
+        vec![provider.clone()],
+        vec![
+            ProviderModel::new(
+                provider.clone(),
+                model.clone(),
+                ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), None),
+            )
+            .with_presentation(presentation),
+        ],
+        Vec::new(),
+    )
+    .expect("runtime snapshot");
+    let handle = RuntimeSnapshotHandle::new(snapshot);
+
+    assert_eq!(
+        handle.supported_reasoning_efforts(&provider, &model),
+        ["low", "high", "max"]
+    );
 }
 
 #[test]

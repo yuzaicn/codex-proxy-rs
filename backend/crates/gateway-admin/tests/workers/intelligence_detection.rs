@@ -22,10 +22,15 @@ use gateway_admin::{
     },
     workers::intelligence_detection::{
         IntelligenceDetectionTask, extract_html_document, matched_phrases, prompt_for_round,
+        resolve_reasoning_effort,
     },
 };
 use gateway_core::{
-    engine::probe::{AccountProbe, AccountProbeRequest, AccountProbeResult},
+    engine::probe::{
+        AccountProbe, AccountProbeError, AccountProbeErrorSource, AccountProbeRequest,
+        AccountProbeResult,
+    },
+    error::{GatewayError, GatewayErrorKind},
     lifecycle::CancellationToken,
     routing::{ConfigRevision, ProviderKind},
     runtime::SnapshotControl,
@@ -44,7 +49,7 @@ fn matches_degraded_phrases_after_whitespace_normalization() {
         "内联 SVG 和 CSS",
         "使用内嵌的SVG",
         "inline SVG",
-        "SVG and CSS",
+        "embed generated SVG",
         "用内联样式写SVG动画",
     ] {
         assert!(
@@ -56,12 +61,30 @@ fn matches_degraded_phrases_after_whitespace_normalization() {
         "<svg viewBox=\"0 0 10 10\"></svg>",
         "这个 CSS 不要用内联样式",
         "一切正常的 HTML 动画。",
+        "SVG and CSS",
+        "inline this answer\0SVG",
     ] {
         assert!(
             matched_phrases(text).is_empty(),
             "expected normal response not to match: {text}"
         );
     }
+}
+
+#[test]
+fn reasoning_effort_auto_uses_catalog_max_and_falls_back_to_xhigh() {
+    assert_eq!(
+        resolve_reasoning_effort(
+            "auto",
+            &["low".to_owned(), "xhigh".to_owned(), "max".to_owned()]
+        ),
+        "max"
+    );
+    assert_eq!(resolve_reasoning_effort("auto", &[]), "xhigh");
+    assert_eq!(
+        resolve_reasoning_effort("high", &["max".to_owned()]),
+        "high"
+    );
 }
 
 #[test]
@@ -102,6 +125,7 @@ impl DetectionFixture {
                 account_scope: DetectionAccountScope::AllAccounts,
                 interval_secs: 3600,
                 model: "test-model".to_owned(),
+                reasoning_effort: "auto".to_owned(),
                 updated_at: Utc::now(),
             },
             targets,
@@ -259,7 +283,11 @@ fn account_store(count: usize, events: &EventLog) -> Arc<FakeAccountStore> {
     store
 }
 
-async fn run_detection(detection: Arc<DetectionFixture>, probe: Arc<CountingProbe>, count: usize) {
+async fn run_detection(
+    detection: Arc<DetectionFixture>,
+    probe: Arc<dyn AccountProbe>,
+    count: usize,
+) {
     let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     let accounts = account_store(count, &events);
     let provider = FakeProviderAdmin::new("test", events);
@@ -280,6 +308,79 @@ async fn run_detection(detection: Arc<DetectionFixture>, probe: Arc<CountingProb
     ))
     .await
     .expect("detection cycle");
+}
+
+struct RejectXhighOnceProbe {
+    calls: AtomicUsize,
+    efforts: Mutex<Vec<String>>,
+}
+
+impl AccountProbe for RejectXhighOnceProbe {
+    fn probe(
+        &self,
+        request: AccountProbeRequest,
+    ) -> BoxFuture<'_, Result<AccountProbeResult, AccountProbeError>> {
+        Box::pin(async move {
+            let gateway_core::operation::Operation::Generate(generate) = request.operation else {
+                panic!("detection probe must use generate");
+            };
+            let effort = generate
+                .protocol_payload()
+                .body()
+                .get("reasoning")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|reasoning| reasoning.get("effort"))
+                .and_then(serde_json::Value::as_str)
+                .expect("detection reasoning effort")
+                .to_owned();
+            self.efforts
+                .lock()
+                .expect("efforts lock")
+                .push(effort.clone());
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            if effort == "xhigh" {
+                return Err(AccountProbeError::new(
+                    GatewayError::new(GatewayErrorKind::InvalidRequest, "invalid upstream request"),
+                    AccountProbeErrorSource::Upstream,
+                    None,
+                    None,
+                ));
+            }
+            Ok(AccountProbeResult {
+                text: vec!["normal response".to_owned()],
+                reasoning: vec!["normal reasoning".to_owned()],
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn xhigh_invalid_request_retries_high_and_records_the_fallback() {
+    let mut detection = DetectionFixture::new(targets(1));
+    Arc::get_mut(&mut detection)
+        .expect("unique detection fixture")
+        .config
+        .reasoning_effort = "xhigh".to_owned();
+    let probe = Arc::new(RejectXhighOnceProbe {
+        calls: AtomicUsize::new(0),
+        efforts: Mutex::new(Vec::new()),
+    });
+
+    run_detection(detection.clone(), probe.clone(), 1).await;
+
+    assert_eq!(probe.calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        probe.efforts.lock().expect("efforts lock").as_slice(),
+        ["xhigh", "high"]
+    );
+    let records = detection.records();
+    assert_eq!(records.len(), 1);
+    assert!(
+        records[0]
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|content| content.contains("xhigh 被上游拒绝") && content.contains("high"))
+    );
 }
 
 #[tokio::test]

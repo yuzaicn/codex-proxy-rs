@@ -13,10 +13,10 @@ use crate::engine::provider::ProviderCatalogGeneration;
 use crate::health::{HealthProbe, HealthState};
 use crate::identity::ProviderKind;
 use crate::lifecycle::CancellationToken;
-use crate::routing::ConfigRevision;
 use crate::routing::snapshot::{
     RuntimeSnapshot, RuntimeSnapshotCompileError, RuntimeSnapshotCompiler, SnapshotStorePort,
 };
+use crate::routing::{ConfigRevision, UpstreamModelId};
 use crate::task::{
     DaemonRestartPolicy, DaemonTask, ScheduledTask, WorkerContribution, WorkerCycleContext,
     WorkerDefinitionError, WorkerId, WorkerKind, WorkerRegistration, WorkerRunnable,
@@ -100,6 +100,29 @@ impl RuntimeSnapshotHandle {
             .map(|snapshot| snapshot.provider_catalog_generations().clone())
     }
 
+    /// 读取当前快照中指定 Provider 模型的 catalog reasoning effort 集合。
+    #[must_use]
+    pub fn supported_reasoning_efforts(
+        &self,
+        provider: &ProviderKind,
+        upstream_model: &UpstreamModelId,
+    ) -> Vec<String> {
+        let Ok(snapshot) = self.acquire() else {
+            return Vec::new();
+        };
+        snapshot
+            .public_model_profiles_for_provider(provider)
+            .into_iter()
+            .find(|profile| profile.model().as_str() == upstream_model.as_str())
+            .map(|profile| {
+                profile
+                    .presentation()
+                    .supported_reasoning_efforts()
+                    .to_vec()
+            })
+            .unwrap_or_default()
+    }
+
     /// 冻结当前 Arc；后续发布不改变已经开始的请求。
     pub fn acquire(&self) -> Result<Arc<RuntimeSnapshot>, RuntimeSnapshotUnavailable> {
         read_unpoisoned(&self.current)
@@ -127,6 +150,16 @@ impl HealthProbe for RuntimeSnapshotHandle {
 /// Admin 提交配置后触发本进程刷新与跨进程通知的对象安全端口。
 pub trait SnapshotControl: Send + Sync {
     fn publish_committed(&self, committed_revision: ConfigRevision) -> BoxFuture<'_, ()>;
+
+    /// 返回当前运行时快照中模型目录声明的 reasoning effort 集合。
+    /// 快照或模型画像不可用时返回空集合，由调用方执行其显式退化策略。
+    fn supported_reasoning_efforts(
+        &self,
+        _provider: &ProviderKind,
+        _upstream_model: &UpstreamModelId,
+    ) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// 配置提交后的本进程快照发布与跨进程失效通知。
@@ -234,6 +267,15 @@ impl SnapshotControl for RuntimeSnapshotPublisher {
         Box::pin(async move {
             self.publish_committed_inner(committed_revision).await;
         })
+    }
+
+    fn supported_reasoning_efforts(
+        &self,
+        provider: &ProviderKind,
+        upstream_model: &UpstreamModelId,
+    ) -> Vec<String> {
+        self.snapshots
+            .supported_reasoning_efforts(provider, upstream_model)
     }
 }
 
