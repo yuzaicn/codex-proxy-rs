@@ -323,6 +323,54 @@ async fn rate_limited_without_quota_exhaustion_does_not_consume() {
 }
 
 #[tokio::test]
+async fn normal_account_with_reset_credits_does_not_consume() {
+    let store = ResetStoreFixture::new(true, true, ResetDetectionAccountScope::AllNonError);
+    let accounts = account_store(account_record("openai"));
+    let operations = OperationsFixture::new(1, Vec::new(), AccountStatus::Normal);
+
+    run_task(
+        store,
+        accounts,
+        runtime(AccountRuntimeSnapshot::default()),
+        operations.clone(),
+    )
+    .await;
+
+    assert_eq!(*operations.reset_reads.lock().expect("reset reads"), 1);
+    assert!(operations.consumes.lock().expect("consumes").is_empty());
+}
+
+#[tokio::test]
+async fn disabled_and_error_accounts_with_reset_credits_do_not_consume() {
+    for (name, mut account) in [
+        ("disabled", account_record("openai")),
+        ("error", account_record("openai")),
+    ] {
+        match name {
+            "disabled" => account.enabled = false,
+            "error" => {
+                account.last_error_reason =
+                    Some(gateway_core::account::AccountErrorReason::CredentialInvalid);
+            }
+            _ => unreachable!(),
+        }
+        let store = ResetStoreFixture::new(true, true, ResetDetectionAccountScope::AllNonError);
+        let accounts = account_store(account);
+        let operations = OperationsFixture::new(1, Vec::new(), AccountStatus::Normal);
+
+        run_task(
+            store,
+            accounts,
+            runtime(AccountRuntimeSnapshot::default()),
+            operations.clone(),
+        )
+        .await;
+
+        assert!(operations.consumes.lock().expect("consumes").is_empty());
+    }
+}
+
+#[tokio::test]
 async fn confirmed_consume_triggers_fresh_quota_verification() {
     let store = ResetStoreFixture::new(true, true, ResetDetectionAccountScope::Limited);
     let operations = OperationsFixture::new(1, vec![success("reset")], AccountStatus::Normal);

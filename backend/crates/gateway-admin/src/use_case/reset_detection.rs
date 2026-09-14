@@ -7,7 +7,8 @@ use crate::{
     model::{
         AdminError, MutationContext,
         reset_detection::{
-            MIN_POLL_INTERVAL_SECS, ReplaceResetDetectionSettings, ResetDetectionSettings,
+            MIN_POLL_INTERVAL_SECS, ReplaceResetDetectionSettings, ResetDetectionAccountScope,
+            ResetDetectionSettings,
         },
     },
     ports::store::ResetDetectionStore,
@@ -70,6 +71,15 @@ fn validate_reset_detection_settings(
 ) -> Result<(), AdminError> {
     if command.poll_interval_secs < MIN_POLL_INTERVAL_SECS {
         Err(AdminError::invalid("轮询间隔不能低于 30 秒"))
+    } else if command.auto_consume_enabled
+        && !matches!(
+            command.account_scope,
+            ResetDetectionAccountScope::Limited | ResetDetectionAccountScope::AllNonError
+        )
+    {
+        Err(AdminError::invalid(
+            "开启自动使用重置卡时，检测范围必须包含受限账号",
+        ))
     } else {
         Ok(())
     }

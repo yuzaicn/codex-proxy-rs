@@ -965,6 +965,7 @@ impl CodexCredentialAdminService {
             .refresher
             .refresh_with_proxy(&refresh_token, proxy)
             .await
+            .inspect_err(|error| log_import_refresh_failure(account_id, error))
             .map_err(map_refresh_failure)?;
         let access_token = tokens
             .access_token
@@ -1054,6 +1055,18 @@ fn map_refresh_failure(error: RefreshFailure) -> CodexCredentialAdminError {
             None => CodexCredentialAdminError::RefreshAmbiguous { message },
         },
     }
+}
+
+fn log_import_refresh_failure(account_id: &ProviderAccountId, error: &RefreshFailure) {
+    let upstream = error.upstream();
+    tracing::warn!(
+        account_id = %account_id,
+        failure_class = error.classification(),
+        upstream_status = ?upstream.map(super::token_client::RefreshUpstreamFailure::status),
+        upstream_code = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::code),
+        upstream_type = ?upstream.and_then(super::token_client::RefreshUpstreamFailure::error_type),
+        "OpenAI OAuth import refresh failed"
+    );
 }
 
 fn log_manual_refresh_failure(account_id: &ProviderAccountId, error: &RefreshFailure) {
