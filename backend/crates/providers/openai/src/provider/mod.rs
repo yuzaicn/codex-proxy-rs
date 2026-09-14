@@ -84,7 +84,9 @@ use crate::transport::request::{
 };
 use crate::transport::session::CodexSessionIdentity;
 use crate::transport::usage::normalize_service_tier;
-use crate::transport::websocket::{CodexWebSocketExchangeError, PreviousResponseUnavailableReason};
+use crate::transport::websocket::{
+    CodexWebSocketCloseError, CodexWebSocketExchangeError, PreviousResponseUnavailableReason,
+};
 use crate::transport::{
     CODEX_ALPHA_SEARCH_PATH, CODEX_IMAGE_EDITS_PATH, CODEX_IMAGE_GENERATIONS_PATH,
     CODEX_RESPONSES_PATH, CodexAccountSelectionTelemetry, CodexBackendClient,
@@ -100,9 +102,9 @@ mod observation;
 mod workers;
 
 use execution::*;
-#[doc(hidden)]
-pub use failure::openai_failure_affects_account_score;
 use failure::*;
+#[doc(hidden)]
+pub use failure::{openai_failure_affects_account_score, websocket_close_failure_contract};
 use observation::*;
 pub(crate) use workers::worker_contributions;
 

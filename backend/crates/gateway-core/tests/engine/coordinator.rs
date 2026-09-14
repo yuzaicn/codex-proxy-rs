@@ -2599,6 +2599,52 @@ fn non_idempotent_explicit_429_rejection_rotates_account_before_output() {
 }
 
 #[test]
+fn replay_safe_pre_event_policy_close_rotates_account_once() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let (coordinator, store, provider) = coordinator(vec![
+        Script::Stream {
+            account_id: "acct_first",
+            items: vec![Err(ProviderError::new(
+                ProviderErrorKind::Transport,
+                UpstreamSendState::Sent,
+            )
+            .with_upstream_code(OpaqueUpstreamValue::new("websocket_close_1008"))
+            .with_replay_safe())],
+        },
+        Script::Stream {
+            account_id: "acct_second",
+            items: complete_stream(None),
+        },
+    ]);
+
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .expect("start execution");
+    block_on(session.collect_uncommitted()).expect("healthy account succeeds");
+    block_on(session.commit_downstream(Some(200))).expect("commit response");
+
+    let contexts = provider.contexts.lock().expect("contexts lock");
+    assert_eq!(contexts.len(), 2);
+    assert!(
+        contexts[1]
+            .excluded_accounts()
+            .contains(&ProviderAccountId::new("acct_first").expect("account id"))
+    );
+    let state = store.state.lock().expect("store lock");
+    assert_eq!(state.attempts.len(), 2);
+    assert_eq!(state.intermediate_failures, 1);
+    assert_eq!(state.finalizations[0].attempt_count, 2);
+    assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Succeeded);
+}
+
+#[test]
 fn rate_limited_account_exhaustion_survives_a_later_empty_selection() {
     let operation = generate_operation();
     let route_plan = plan(&operation);

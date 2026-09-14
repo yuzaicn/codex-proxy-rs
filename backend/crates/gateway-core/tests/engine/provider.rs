@@ -277,7 +277,7 @@ fn provider_stream_should_not_sequence_gate_canonical_observation_attached_to_wi
 }
 
 #[test]
-fn provider_stream_should_report_confirmed_sent_failure_but_ignore_unconfirmed_failure() {
+fn provider_stream_should_report_sent_and_ambiguous_failures_but_ignore_not_sent_failure() {
     let feedback = Arc::new(AccountFeedbackStats::default());
     let provider = ProviderKind::new("xai").expect("valid provider");
     let sent_account = ProviderAccountId::new("acct_stream_sent").expect("account");
@@ -298,8 +298,8 @@ fn provider_stream_should_report_confirmed_sent_failure_but_ignore_unconfirmed_f
             ProviderErrorKind::Transport,
             send_state,
         ))]));
-        let mut provider_stream =
-            ProviderStream::new(metadata, events, ()).with_account_feedback(Arc::clone(&feedback));
+        let mut provider_stream = ProviderStream::new(metadata, events, ())
+            .with_filtered_account_feedback(Arc::clone(&feedback), |_| true);
         futures::executor::block_on(async {
             assert!(
                 provider_stream
@@ -315,11 +315,46 @@ fn provider_stream_should_report_confirmed_sent_failure_but_ignore_unconfirmed_f
         Some(2_000)
     );
     assert_eq!(
-        feedback.scheduling_signals(&provider, &ambiguous_account),
-        (None, None)
+        feedback.scheduling_signals(&provider, &ambiguous_account).0,
+        Some(2_000)
     );
     assert_eq!(
         feedback.scheduling_signals(&provider, &not_sent_account),
+        (None, None)
+    );
+}
+
+#[test]
+fn provider_stream_should_ignore_ambiguous_same_account_transport_retry() {
+    let feedback = Arc::new(AccountFeedbackStats::default());
+    let provider = ProviderKind::new("openai").expect("valid provider");
+    let account = ProviderAccountId::new("acct_ambiguous_retry").expect("account");
+    let metadata = ProviderCallMetadata::new(
+        provider.clone(),
+        UpstreamModelId::new("gpt-5").expect("valid model"),
+        account.clone(),
+        UpstreamTransport::new("websocket").expect("valid transport"),
+    );
+    let error = ProviderError::new(ProviderErrorKind::Transport, UpstreamSendState::Ambiguous)
+        .with_pre_delivery_transport_retry(
+            NonZeroU32::new(1).expect("positive retry index"),
+            Duration::ZERO,
+        );
+    let events: EventStream = Box::pin(stream::iter([Err(error)]));
+    let mut provider_stream = ProviderStream::new(metadata, events, ())
+        .with_filtered_account_feedback(Arc::clone(&feedback), |_| true);
+
+    futures::executor::block_on(async {
+        assert!(
+            provider_stream
+                .next()
+                .await
+                .is_some_and(|event| event.is_err())
+        );
+    });
+
+    assert_eq!(
+        feedback.scheduling_signals(&provider, &account),
         (None, None)
     );
 }

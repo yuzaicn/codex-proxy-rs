@@ -325,7 +325,10 @@ impl GrokBuildProvider {
         );
         let stream = ProviderStream::new(metadata, events, selected);
         Ok(if allows_account_state_mutation {
-            stream.with_account_feedback(Arc::clone(&self.account_feedback))
+            stream.with_filtered_account_feedback(
+                Arc::clone(&self.account_feedback),
+                xai_failure_affects_account_score,
+            )
         } else {
             stream
         })
@@ -419,11 +422,21 @@ impl GrokBuildProvider {
         );
         let stream = ProviderStream::new(metadata, events, selected);
         Ok(if allows_account_state_mutation {
-            stream.with_account_feedback(Arc::clone(&self.account_feedback))
+            stream.with_filtered_account_feedback(
+                Arc::clone(&self.account_feedback),
+                xai_failure_affects_account_score,
+            )
         } else {
             stream
         })
     }
+}
+
+// gateway-core 会把 `Ambiguous` 终态交给 provider filter；xAI 维持既有语义，
+// 只对已确认发送的失败更新账号健康度。
+#[doc(hidden)]
+pub fn xai_failure_affects_account_score(error: &ProviderError) -> bool {
+    error.send_state() == UpstreamSendState::Sent
 }
 
 async fn select_grok_session(

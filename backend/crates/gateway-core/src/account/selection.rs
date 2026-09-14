@@ -684,10 +684,17 @@ fn select_smart_candidate<'a>(
 
 pub(crate) fn smart_score(candidate: &AccountCandidate, default_concurrency: NonZeroU32) -> f64 {
     let load = 1.0 - capacity_utilization(candidate, default_concurrency).clamp(0.0, 1.0);
-    let quota = candidate
+    let mut quota = candidate
         .signals
         .quota_remaining_rank
         .map_or(0.5, |quota| quota.min(10_000) as f64 / 10_000.0);
+    if candidate.signals.failure_rate_basis_points.is_none()
+        && candidate.signals.first_output_latency_ms.is_none()
+    {
+        // 从未成功产出过的新账号不能仅凭满额度垄断调度。EWMA 是进程内信号，
+        // 重启后同样会清零；封顶为中性可让冷启动账号轮转采样，且不抬升低额度分。
+        quota = quota.min(0.5);
+    }
     let failure = 1.0
         - f64::from(
             candidate
@@ -700,7 +707,7 @@ pub(crate) fn smart_score(candidate: &AccountCandidate, default_concurrency: Non
         .signals
         .first_output_latency_ms
         .filter(|latency| *latency > 0)
-        .map_or(1.0, |latency| {
+        .map_or(0.5, |latency| {
             SMART_LATENCY_HALF_SCORE_MS / (SMART_LATENCY_HALF_SCORE_MS + latency as f64)
         });
 

@@ -34,11 +34,21 @@ fn openai_account_score_failure_reason(error: &ProviderError) -> Option<&str> {
 #[doc(hidden)]
 pub fn openai_failure_affects_account_score(error: &ProviderError) -> bool {
     openai_account_score_failure_reason(error).is_some_and(is_openai_account_score_failure_reason)
+        // 上游触达后的传输/超时类终态失败代表账号被选中却没有产出，应进入
+        // 调度健康度；纯基础设施失败 `NotSent` 没有触达账号，继续排除。
+        || (matches!(
+            error.kind(),
+            ProviderErrorKind::Transport | ProviderErrorKind::Timeout
+        ) && matches!(
+            error.send_state(),
+            UpstreamSendState::Sent | UpstreamSendState::Ambiguous
+        ))
 }
 
 pub(super) struct MappedProviderFailure {
     pub(super) error: ProviderError,
     pub(super) websocket_transport_retryable: bool,
+    pub(super) websocket_account_rejection: bool,
     pub(super) account_failure: Option<CodexAccountFailure>,
     /// 原始上游错误描述，仅在凭据错误状态下持久化。
     pub(super) error_message: Option<String>,
@@ -54,6 +64,7 @@ impl MappedProviderFailure {
         Self {
             error,
             websocket_transport_retryable: false,
+            websocket_account_rejection: false,
             account_failure: None,
             error_message: None,
             cyber_policy_failure: false,
@@ -506,6 +517,25 @@ pub(super) fn apply_websocket_recovery_policy(
     failure: &mut MappedProviderFailure,
     context: WebSocketRecoveryContext<'_>,
 ) {
+    // 上游 zyycn PR #89 在同一位置对升级期账号拒绝使用
+    // `account_failure.is_some() && replay_is_safe()` 短路；未来同步时合并两个条件。
+    if failure.websocket_account_rejection && failure.error.replay_is_safe() {
+        tracing::warn!(
+            request_id = context.request_id,
+            attempt_index = context.attempt_index,
+            account_id = context.account_id,
+            websocket_failure_kind = failure.error.kind().as_str(),
+            websocket_failure_code = failure
+                .error
+                .upstream_code()
+                .map_or("", OpaqueUpstreamValue::as_str),
+            upstream_send_state = ?failure.error.send_state(),
+            transport_requirement = context.requirement.as_str(),
+            continuation_recovery_action = "rotate_account",
+            "OpenAI upstream WebSocket rejected the account before any event; rotating account"
+        );
+        return;
+    }
     let session_budget_exhausted = context.session_affinity_key.is_some_and(|key| {
         context
             .session_transport_recovery
@@ -815,6 +845,7 @@ pub(super) fn map_client_error(
             failure
         }
         CodexClientError::WebSocket(error) => {
+            let websocket_account_rejection = pre_event_policy_close(&error).is_some();
             let close_code = error.close_before_terminal().and_then(|close| close.code());
             let client_visible_error = websocket_client_visible_error(&error);
             let mut failure = MappedProviderFailure::plain(provider_error(
@@ -847,6 +878,10 @@ pub(super) fn map_client_error(
                         .error
                         .with_upstream_request_id(OpaqueUpstreamValue::new(request_id.clone()));
                 }
+            }
+            if websocket_account_rejection {
+                failure.error = failure.error.with_replay_safe();
+                failure.websocket_account_rejection = true;
             }
             if let Some(client_visible_error) = client_visible_error {
                 failure.error = failure
@@ -1216,6 +1251,7 @@ pub(super) fn map_upstream_failure(
     MappedProviderFailure {
         error,
         websocket_transport_retryable: false,
+        websocket_account_rejection: false,
         account_failure: account_failure(
             category,
             failure.retry_after_seconds,
@@ -1317,6 +1353,9 @@ pub(super) fn account_failure(
 }
 
 pub(super) fn websocket_send_state(error: &CodexWebSocketExchangeError) -> UpstreamSendState {
+    if pre_event_policy_close(error).is_some() {
+        return UpstreamSendState::Sent;
+    }
     match error.classified() {
         CodexWebSocketExchangeError::InvalidRequest(_)
         | CodexWebSocketExchangeError::Connect(_)
@@ -1341,6 +1380,58 @@ pub(super) fn websocket_send_state(error: &CodexWebSocketExchangeError) -> Upstr
             unreachable!("classified websocket errors never retain observation wrappers")
         }
     }
+}
+
+fn pre_event_policy_close(
+    error: &CodexWebSocketExchangeError,
+) -> Option<&CodexWebSocketCloseError> {
+    let classified = error.classified();
+    let close = match classified {
+        CodexWebSocketExchangeError::ClosedBeforeTerminal(close) => close,
+        CodexWebSocketExchangeError::PostSendAmbiguous {
+            source: Some(source),
+            ..
+        } => match source.classified() {
+            CodexWebSocketExchangeError::ClosedBeforeTerminal(close) => close,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (close.code() == Some(1008) && close.last_event_type().is_none()).then_some(close)
+}
+
+/// 构造并映射 close-before-terminal 错误，供 crate 外的契约测试验证失败分类边界。
+#[doc(hidden)]
+pub fn websocket_close_failure_contract(
+    code: u16,
+    last_event_type: Option<&str>,
+    post_send: bool,
+    reused_connection: bool,
+) -> ProviderError {
+    let mut error = CodexWebSocketExchangeError::closed_before_terminal_on(
+        Uuid::new_v4(),
+        Some(code),
+        Some("redacted policy reason".to_owned()),
+        last_event_type.map(str::to_owned),
+    );
+    if reused_connection {
+        error = CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent {
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        };
+    }
+    if post_send {
+        error = CodexWebSocketExchangeError::PostSendAmbiguous {
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        };
+    }
+    map_client_error(
+        CodexClientError::WebSocket(error),
+        UpstreamSendState::Ambiguous,
+        false,
+    )
+    .error
 }
 
 pub(super) fn websocket_error_kind(error: &CodexWebSocketExchangeError) -> ProviderErrorKind {

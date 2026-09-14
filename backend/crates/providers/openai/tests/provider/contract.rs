@@ -224,6 +224,27 @@ fn provider_and_quota_with_affinity_and_base_url_and_leases(
     leases: Arc<TestLeaseCoordinator>,
     stream_max_retries: u32,
 ) -> (CodexProvider, Arc<CodexCredentialQuotaService>) {
+    let (provider, quota, _) = provider_quota_and_feedback_with_affinity_and_base_url_and_leases(
+        store,
+        session_affinity,
+        base_url,
+        leases,
+        stream_max_retries,
+    );
+    (provider, quota)
+}
+
+fn provider_quota_and_feedback_with_affinity_and_base_url_and_leases(
+    store: &Arc<MemoryAccountStore>,
+    session_affinity: Arc<MemorySessionAffinity>,
+    base_url: String,
+    leases: Arc<TestLeaseCoordinator>,
+    stream_max_retries: u32,
+) -> (
+    CodexProvider,
+    Arc<CodexCredentialQuotaService>,
+    Arc<AccountFeedbackStats>,
+) {
     let profile = wire_profile();
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -261,7 +282,7 @@ fn provider_and_quota_with_affinity_and_base_url_and_leases(
         selector,
         catalog,
         Arc::clone(&quota),
-        account_feedback,
+        Arc::clone(&account_feedback),
         http,
         profile,
         base_url,
@@ -269,7 +290,7 @@ fn provider_and_quota_with_affinity_and_base_url_and_leases(
         stream_max_retries,
     )
     .expect("official OpenAI provider");
-    (provider, quota)
+    (provider, quota, account_feedback)
 }
 
 async fn create_account(store: &Arc<MemoryAccountStore>, id: &str) {
@@ -493,6 +514,26 @@ fn context(request_id: &str, cancellation: CancellationToken) -> AttemptContext 
             .with_account_scope(contract_account_scope()),
         None,
         cancellation,
+    )
+}
+
+fn context_with_exclusions(
+    request_id: &str,
+    attempt_index: u32,
+    excluded_accounts: BTreeSet<ProviderAccountId>,
+) -> AttemptContext {
+    AttemptContext::new(
+        RequestAttemptContext::new(
+            ModelRequestId::new(request_id).expect("request id"),
+            ClientApiKeyId::new("key_openai_contract").expect("client key id"),
+        ),
+        NonZeroU32::new(attempt_index).expect("attempt"),
+        SystemTime::now() + Duration::from_secs(30),
+        account_policy(),
+        AccountAttemptContext::new(excluded_accounts, None, None)
+            .with_account_scope(contract_account_scope()),
+        None,
+        CancellationToken::new(),
     )
 }
 
@@ -2328,6 +2369,212 @@ async fn abrupt_websocket_disconnect_preserves_diagnosis_and_ambiguous_send_stat
 }
 
 #[tokio::test]
+async fn pre_event_policy_close_is_replay_safe_and_does_not_consume_session_budget() {
+    const ACCOUNT_ID: &str = "acct_websocket_close";
+    const SESSION_ID: &str = "session-policy-close";
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, ACCOUNT_ID).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let base_url = format!("http://{}", listener.local_addr().expect("address"));
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    let received_payloads = Arc::clone(&payloads);
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.expect("accept WS");
+            let mut websocket = accept_codex_test_websocket(stream).await;
+            let payload = websocket
+                .next()
+                .await
+                .expect("request payload")
+                .expect("valid request payload");
+            received_payloads
+                .lock()
+                .expect("payload lock")
+                .push(payload.into_data());
+            websocket
+                .close(Some(CloseFrame {
+                    code: CloseCode::Policy,
+                    reason: "account rejected".into(),
+                }))
+                .await
+                .expect("close with policy violation");
+        }
+    });
+    // 零预算会让任一普通 WS 失败立即切 HTTP；第二次仍走 WS 可证明 1008 短路
+    // 位于预算记录之前，既不消耗预算，也不置 disable_websocket。
+    let (provider, _, feedback) = provider_quota_and_feedback_with_affinity_and_base_url_and_leases(
+        &store,
+        Arc::new(MemorySessionAffinity::default()),
+        base_url,
+        Arc::new(TestLeaseCoordinator::default()),
+        0,
+    );
+    for index in 0..2 {
+        let operation = Operation::Generate(generate_with_persisted_session_context(
+            ACCOUNT_ID,
+            "conversation-policy-close",
+            SESSION_ID,
+            "turn-policy-close",
+        ));
+        let mut stream = provider
+            .execute(
+                planned_request("openai", operation),
+                context(
+                    &format!("req_policy_close_{index}"),
+                    CancellationToken::new(),
+                ),
+            )
+            .await
+            .expect("prepare WebSocket provider stream");
+        assert_eq!(stream.metadata().transport().as_str(), "websocket");
+        let error = loop {
+            match stream.next().await {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => break error,
+                None => panic!("policy close must surface a provider error"),
+            }
+        };
+        assert_eq!(error.kind(), ProviderErrorKind::Transport);
+        assert_eq!(error.send_state(), UpstreamSendState::Sent);
+        assert!(error.replay_is_safe());
+        assert_eq!(error.pre_delivery_retry(), None);
+        assert_eq!(
+            error.upstream_code().map(|code| code.as_str()),
+            Some("websocket_close_1008")
+        );
+    }
+    server.await.expect("server");
+    assert_eq!(payloads.lock().expect("payload lock").len(), 2);
+    assert!(
+        feedback
+            .scheduling_signals(
+                &ProviderKind::new("openai").expect("provider"),
+                &ProviderAccountId::new(ACCOUNT_ID).expect("account"),
+            )
+            .0
+            .is_some_and(|failure_rate| failure_rate > 0)
+    );
+}
+
+#[tokio::test]
+async fn pre_event_policy_close_allows_the_next_attempt_to_use_a_healthy_account() {
+    const REJECTED_ACCOUNT: &str = "acct_affinity_switch_a";
+    const HEALTHY_ACCOUNT: &str = "acct_affinity_switch_b";
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, REJECTED_ACCOUNT).await;
+    create_account(&store, HEALTHY_ACCOUNT).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let base_url = format!("http://{}", listener.local_addr().expect("address"));
+    let payload_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_payload_count = Arc::clone(&payload_count);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept rejected account");
+        let mut rejected = accept_codex_test_websocket(stream).await;
+        rejected
+            .next()
+            .await
+            .expect("rejected payload")
+            .expect("valid rejected payload");
+        server_payload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        rejected
+            .close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "account rejected".into(),
+            }))
+            .await
+            .expect("reject account");
+
+        let (stream, _) = listener.accept().await.expect("accept healthy account");
+        let mut healthy = accept_codex_test_websocket(stream).await;
+        healthy
+            .next()
+            .await
+            .expect("healthy payload")
+            .expect("valid healthy payload");
+        server_payload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        healthy
+            .send(Message::Text(
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_healthy_rotation", "model": "gpt-5.4"}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("start healthy response");
+        healthy
+            .send(Message::Text(
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_healthy_rotation",
+                        "model": "gpt-5.4",
+                        "status": "completed",
+                        "output": []
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("complete healthy response");
+    });
+    let provider = provider_with_base_url_and_retry_budget(&store, base_url, 1);
+    let operation = || {
+        Operation::Generate(generate_with_session_context(
+            "session-account-rotation",
+            Some("thread-account-rotation"),
+            None,
+        ))
+    };
+
+    let mut rejected = provider
+        .execute(
+            planned_request("openai", operation()),
+            context_with_exclusions("req_account_rotation", 1, BTreeSet::new()),
+        )
+        .await
+        .expect("prepare rejected attempt");
+    assert_eq!(
+        rejected.metadata().provider_account_id().as_str(),
+        REJECTED_ACCOUNT
+    );
+    let error = loop {
+        match rejected.next().await {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => break error,
+            None => panic!("rejected attempt must fail"),
+        }
+    };
+    assert_eq!(error.send_state(), UpstreamSendState::Sent);
+    assert!(error.replay_is_safe());
+    assert_eq!(error.pre_delivery_retry(), None);
+    drop(rejected);
+
+    let mut healthy = provider
+        .execute(
+            planned_request("openai", operation()),
+            context_with_exclusions(
+                "req_account_rotation",
+                2,
+                BTreeSet::from([ProviderAccountId::new(REJECTED_ACCOUNT).expect("account")]),
+            ),
+        )
+        .await
+        .expect("prepare healthy attempt");
+    assert_eq!(
+        healthy.metadata().provider_account_id().as_str(),
+        HEALTHY_ACCOUNT
+    );
+    while let Some(event) = healthy.next().await {
+        event.expect("healthy account succeeds");
+    }
+    server.await.expect("server");
+    assert_eq!(payload_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn websocket_idle_timeout_diagnosis_survives_ambiguous_send_wrapping() {
     const ACCOUNT_ID: &str = "acct_abrupt_disconnect";
     let store = Arc::new(MemoryAccountStore::default());
@@ -2483,7 +2730,7 @@ async fn ambiguous_websocket_close_reconnects_and_retains_native_continuation() 
             .expect("send structural output event");
         websocket
             .close(Some(CloseFrame {
-                code: CloseCode::Normal,
+                code: CloseCode::Policy,
                 reason: "".into(),
             }))
             .await
@@ -2598,12 +2845,12 @@ async fn ambiguous_websocket_close_reconnects_and_retains_native_continuation() 
     assert_eq!(error.pre_delivery_retry(), None);
     assert_eq!(
         error.upstream_code().map(|code| code.as_str()),
-        Some("websocket_close_1000")
+        Some("websocket_close_1008")
     );
     assert_eq!(
         error.diagnostic().map(|diagnostic| diagnostic.as_str()),
         Some(
-            "OpenAI WebSocket closed before a terminal response (close code 1000); last event type: response.output_item.added"
+            "OpenAI WebSocket closed before a terminal response (close code 1008); last event type: response.output_item.added"
         )
     );
     let raw_close: Value = serde_json::from_str(
@@ -2614,7 +2861,7 @@ async fn ambiguous_websocket_close_reconnects_and_retains_native_continuation() 
     )
     .expect("raw WebSocket close JSON");
     assert_eq!(raw_close.get("type"), Some(&json!("websocket.close")));
-    assert_eq!(raw_close.get("code"), Some(&json!(1000)));
+    assert_eq!(raw_close.get("code"), Some(&json!(1008)));
     assert_eq!(raw_close.get("reason"), Some(&json!("")));
     assert_eq!(
         raw_close.get("last_event_type"),
@@ -2623,7 +2870,7 @@ async fn ambiguous_websocket_close_reconnects_and_retains_native_continuation() 
     let connection = error
         .connection_observation()
         .expect("normal close should retain its connection lifecycle observation");
-    assert_eq!(connection.exit_reason(), "normal_close");
+    assert_eq!(connection.exit_reason(), "upstream_close");
     assert!(connection.age_ms() >= connection.idle_ms());
 
     let second_operation = Operation::Generate(generate_with_persisted_session_context(

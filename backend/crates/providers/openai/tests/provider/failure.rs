@@ -8,7 +8,7 @@ use gateway_core::error::{
 };
 use gateway_core::routing::{ProviderKind, UpstreamModelId};
 use gateway_core::upstream::{UpstreamSendState, UpstreamTransport};
-use provider_openai::openai_failure_affects_account_score;
+use provider_openai::{openai_failure_affects_account_score, websocket_close_failure_contract};
 
 fn sent_error(kind: ProviderErrorKind, code: Option<&str>) -> ProviderError {
     let error = ProviderError::new(kind, UpstreamSendState::Sent);
@@ -16,6 +16,10 @@ fn sent_error(kind: ProviderErrorKind, code: Option<&str>) -> ProviderError {
         Some(code) => error.with_upstream_code(OpaqueUpstreamValue::new(code)),
         None => error,
     }
+}
+
+fn transport_error(kind: ProviderErrorKind, send_state: UpstreamSendState) -> ProviderError {
+    ProviderError::new(kind, send_state)
 }
 
 fn deliver_error_with_openai_feedback(
@@ -118,11 +122,6 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
         ),
         sent_error(ProviderErrorKind::Unavailable, Some("service_unavailable")),
         sent_error(
-            ProviderErrorKind::Transport,
-            Some("upstream_transport_error"),
-        ),
-        sent_error(ProviderErrorKind::Timeout, Some("first_output_timeout")),
-        sent_error(
             ProviderErrorKind::Protocol,
             Some("upstream_stream_truncated"),
         ),
@@ -131,8 +130,6 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
             Some("upstream_empty_response"),
         ),
         sent_error(ProviderErrorKind::Unavailable, Some("new_unknown_reason")),
-        sent_error(ProviderErrorKind::Transport, Some("new_unknown_reason")),
-        sent_error(ProviderErrorKind::Transport, Some("")),
         ProviderError::new(ProviderErrorKind::Unavailable, UpstreamSendState::Sent)
             .with_status(503),
     ] {
@@ -145,18 +142,42 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
 
 #[test]
 fn account_score_failure_filter_should_reject_internal_kinds_without_a_reason() {
-    for kind in [
-        ProviderErrorKind::Transport,
-        ProviderErrorKind::Timeout,
-        ProviderErrorKind::Protocol,
-    ] {
-        let error = sent_error(kind, None);
-        assert!(
-            !openai_failure_affects_account_score(&error),
-            "unlisted internal failure affected the score: {}",
-            kind.as_str()
-        );
+    let error = sent_error(ProviderErrorKind::Protocol, None);
+    assert!(!openai_failure_affects_account_score(&error));
+}
+
+#[test]
+fn account_score_failure_filter_should_score_transport_failures_after_upstream_contact() {
+    for kind in [ProviderErrorKind::Transport, ProviderErrorKind::Timeout] {
+        for send_state in [UpstreamSendState::Sent, UpstreamSendState::Ambiguous] {
+            assert!(openai_failure_affects_account_score(&transport_error(
+                kind, send_state
+            )));
+        }
+        assert!(!openai_failure_affects_account_score(&transport_error(
+            kind,
+            UpstreamSendState::NotSent,
+        )));
     }
+}
+
+#[test]
+fn openai_feedback_should_score_ambiguous_transport_failure() {
+    let feedback = Arc::new(AccountFeedbackStats::default());
+    let provider = ProviderKind::new("openai").expect("provider");
+    let account = ProviderAccountId::new("acct_ambiguous_transport").expect("account");
+
+    deliver_error_with_openai_feedback(
+        &feedback,
+        &provider,
+        &account,
+        transport_error(ProviderErrorKind::Transport, UpstreamSendState::Ambiguous),
+    );
+
+    assert_eq!(
+        feedback.scheduling_signals(&provider, &account).0,
+        Some(2_000)
+    );
 }
 
 #[test]
@@ -197,4 +218,42 @@ fn openai_feedback_should_score_server_overload_as_one_regular_failure() {
         feedback.scheduling_signals(&provider, &account).0,
         Some(2_000)
     );
+}
+
+#[test]
+fn pre_event_policy_close_matches_plain_and_post_send_shapes() {
+    for post_send in [false, true] {
+        let error = websocket_close_failure_contract(1008, None, post_send, false);
+        assert_eq!(error.send_state(), UpstreamSendState::Sent);
+        assert!(error.replay_is_safe());
+        assert_eq!(error.pre_delivery_retry(), None);
+        assert_eq!(
+            error.upstream_code().map(OpaqueUpstreamValue::as_str),
+            Some("websocket_close_1008")
+        );
+    }
+}
+
+#[test]
+fn pre_event_policy_close_rejects_reused_connection_wrapper() {
+    let error = websocket_close_failure_contract(1008, None, true, true);
+
+    assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
+    assert!(!error.replay_is_safe());
+    assert_eq!(
+        error.upstream_code().map(OpaqueUpstreamValue::as_str),
+        Some("websocket_close_1008")
+    );
+}
+
+#[test]
+fn pre_event_policy_close_rejects_prior_events_and_other_codes() {
+    for error in [
+        websocket_close_failure_contract(1008, Some("response.created"), true, false),
+        websocket_close_failure_contract(1000, None, true, false),
+        websocket_close_failure_contract(1011, None, true, false),
+    ] {
+        assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
+        assert!(!error.replay_is_safe());
+    }
 }

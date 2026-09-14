@@ -51,6 +51,8 @@ pub use credential::{
     parse_oauth_error, parse_refresh_success,
 };
 pub use provider::GrokBuildProvider;
+#[doc(hidden)]
+pub use provider::xai_failure_affects_account_score;
 pub use transport::profile::{
     GROK_CLI_RELEASE_URL, GrokCliReleaseError, GrokCliReleaseService, GrokCliReleaseSnapshot,
     GrokCliReleaseStatus, GrokCliReleaseTransport,
