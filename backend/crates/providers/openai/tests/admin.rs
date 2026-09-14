@@ -1980,17 +1980,13 @@ mod errors {
                 Kind::BadGateway,
                 "刷新令牌无效或已失效，请重新授权",
             ),
-            (
-                429,
-                "unknown",
-                Kind::BadGateway,
-                "OpenAI 令牌刷新请求被限流，请稍后重试",
-            ),
+            // GUCH-191：fork 把 429/5xx 从上游的 BadGateway 大类拆为专属分类，这里跟随 fork 口径。
+            (429, "unknown", Kind::RateLimited, "上游限流，请稍后重试"),
             (
                 503,
                 "unknown",
-                Kind::BadGateway,
-                "OpenAI 令牌刷新服务异常，请稍后重试",
+                Kind::UpstreamUnavailable,
+                "上游服务暂不可用，请稍后重试",
             ),
         ] {
             let server = MockServer::start().await;
