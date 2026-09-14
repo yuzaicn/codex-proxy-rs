@@ -15,6 +15,7 @@ mod selector;
 pub mod token_client;
 mod types;
 
+pub(crate) use admin::credential_admin_error_code;
 pub(crate) use affinity::{
     CodexSessionAffinity, derive_codex_cyber_policy_session_key,
     derive_codex_endpoint_session_affinity, derive_codex_session_affinity,

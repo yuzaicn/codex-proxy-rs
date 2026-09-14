@@ -55,6 +55,7 @@ use crate::credential::{
     CodexProfileStatisticsError, CodexQuotaWindow, CodexQuotaWindowKind, CodexQuotaWindowRole,
     CodexResetCreditsError, CompleteCodexOAuthAuthorization, CompletedCodexOAuthCredential,
     ExportManagedCodexCredential, StartCodexOAuthAuthorization, StoredCodexPendingAuthorization,
+    credential_admin_error_code,
 };
 use crate::credential::{
     CodexCredentialCodec, CodexOAuthSecret, oauth_owner_ref, parse_access_token_expiration,
@@ -309,6 +310,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
                 log_import_failure("prepare_document", credential_admin_error_code(error));
             })
             .map_err(map_credential_admin_error)?;
+        let failures = prepared.failures().to_vec();
         let observed_at = Utc::now();
         let mut credentials = Vec::with_capacity(prepared.accounts().len());
         for account in prepared.into_accounts() {
@@ -326,6 +328,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
         Ok(PreparedCredentialImport {
             provider_kind: self.provider_kind.clone(),
             credentials,
+            failures,
         })
     }
 
@@ -1452,26 +1455,6 @@ fn refresh_rejection_message(code: Option<&str>) -> Option<&'static str> {
         Some("token_expired") => Some("刷新令牌不可用，请重新授权"),
         Some("invalid_grant") => Some("刷新令牌无效或已失效，请重新授权"),
         _ => None,
-    }
-}
-
-const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'static str {
-    match error {
-        CodexCredentialAdminError::PersonalAccessToken(_) => {
-            "personal_access_token_validation_failed"
-        }
-        CodexCredentialAdminError::InvalidInput => "invalid_input",
-        CodexCredentialAdminError::InvalidCredential => "invalid_credential",
-        CodexCredentialAdminError::NotFound => "not_found",
-        CodexCredentialAdminError::MissingRefreshToken => "missing_refresh_token",
-        CodexCredentialAdminError::RefreshLeaseUnavailable => "refresh_lease_unavailable",
-        CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
-        CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
-        CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
-        CodexCredentialAdminError::RefreshUpstream { .. } => "refresh_upstream_failed",
-        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
-        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
-        CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }
 

@@ -399,7 +399,8 @@ mod actions {
         Revision,
         accounts::AccountConnectionTestEvent as DomainConnectionTestEvent,
         provider_credentials::{
-            CredentialDeletionResult, CredentialImportResult, CredentialMutationResult,
+            CredentialDeletionResult, CredentialImportFailure, CredentialImportResult,
+            CredentialMutationResult,
         },
     };
     use gateway_api::admin::accounts::{
@@ -658,14 +659,30 @@ mod actions {
     #[test]
     fn account_import_response_should_emit_account_ids() {
         let response = AccountImportData::from_result(CredentialImportResult {
-            config_revision: Revision::new(8).expect("revision"),
+            config_revision: Some(Revision::new(8).expect("revision")),
             credential_ids: vec![ProviderAccountId::new("acct_imported").expect("account ID")],
+            created_count: 1,
+            updated_count: 0,
+            failures: vec![CredentialImportFailure {
+                index: 2,
+                code: "refresh_rejected",
+                retryable: false,
+                message: "该令牌已失效，请更换",
+            }],
         });
         assert_eq!(
             serde_json::to_value(response).expect("serialize account import"),
             json!({
                 "importedCount": 1,
-                "accountIds": ["acct_imported"]
+                "accountIds": ["acct_imported"],
+                "createdCount": 1,
+                "updatedCount": 0,
+                "failures": [{
+                    "index": 2,
+                    "code": "refresh_rejected",
+                    "retryable": false,
+                    "message": "该令牌已失效，请更换"
+                }]
             })
         );
     }

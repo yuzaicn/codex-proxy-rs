@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, FixedOffset, Utc};
+use gateway_admin::model::provider_credentials::CredentialImportFailure;
 use gateway_core::account::{
     AccountErrorReason, CredentialCasUpdate, CredentialRevision, CredentialState, LoadedCredential,
     NewProviderAccount, ProviderAccount, ProviderAccountId, ProviderAccountIdentity,
@@ -96,6 +97,7 @@ impl std::fmt::Debug for ImportCodexOAuthCredential {
 /// Provider-owned 文档归一后的唯一 Core 写入批次。
 pub struct PreparedCodexAccountImport {
     accounts: Vec<NewProviderAccount>,
+    failures: Vec<CredentialImportFailure>,
 }
 
 impl PreparedCodexAccountImport {
@@ -108,6 +110,11 @@ impl PreparedCodexAccountImport {
     pub fn into_accounts(self) -> Vec<NewProviderAccount> {
         self.accounts
     }
+
+    #[must_use]
+    pub fn failures(&self) -> &[CredentialImportFailure] {
+        &self.failures
+    }
 }
 
 impl fmt::Debug for PreparedCodexAccountImport {
@@ -115,6 +122,7 @@ impl fmt::Debug for PreparedCodexAccountImport {
         formatter
             .debug_struct("PreparedCodexAccountImport")
             .field("account_count", &self.accounts.len())
+            .field("failure_count", &self.failures.len())
             .field("accounts", &"<redacted>")
             .finish()
     }
@@ -379,6 +387,74 @@ impl CodexCredentialAdminError {
             | Self::RefreshRateLimited { .. }
             | Self::RefreshUpstreamUnavailable => None,
         }
+    }
+}
+
+pub(crate) fn import_failure(
+    error: &CodexCredentialAdminError,
+    index: usize,
+) -> CredentialImportFailure {
+    use CodexCredentialAdminError as Error;
+    let code = credential_admin_error_code(error);
+    let (retryable, message) = match error {
+        Error::RefreshRejected { .. } => (false, "该令牌已失效，请更换"),
+        Error::AccountBanned { .. } => (false, "该账号已被封禁，请更换账号"),
+        Error::RefreshUnavailable => (true, "暂时无法连接上游，请稍后重试"),
+        Error::RefreshRateLimited { .. } => (true, "上游限流，请稍后重试"),
+        Error::RefreshUpstreamUnavailable => (true, "上游服务暂不可用，请稍后重试"),
+        // GUCH-191：429/5xx 属可恢复的上游状态；401/403 是授权层面的拒绝，
+        // 原样重试不会有不同结果，与 RefreshRejected 同判为不可重试。
+        Error::RefreshUpstream { status, .. } => match status {
+            429 | 500..=599 => (true, "上游服务异常，请稍后重试"),
+            _ => (false, "上游拒绝了令牌刷新，请检查账号授权状态"),
+        },
+        Error::RefreshAmbiguous { .. } => (true, "上游执行结果未知，请刷新状态后再决定是否重试"),
+        Error::RefreshLeaseUnavailable => (true, "刷新资源暂时不可用，请稍后重试"),
+        Error::InvalidCredential => (false, "凭据格式无效，请检查后重试"),
+        Error::InvalidInput => (false, "导入内容无效，请检查后重试"),
+        Error::MissingRefreshToken => (false, "缺少 refresh token，请补充后重试"),
+        Error::NotFound => (false, "Provider 资源不存在"),
+        Error::PersonalAccessToken(PersonalAccessTokenError::InvalidToken) => (
+            false,
+            "Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符",
+        ),
+        Error::PersonalAccessToken(PersonalAccessTokenError::Rejected) => (
+            false,
+            "OpenAI 拒绝了 Codex PAT：令牌可能无效、已过期、已撤销或没有访问权限",
+        ),
+        Error::PersonalAccessToken(PersonalAccessTokenError::Unavailable) => {
+            (true, "暂时无法向 OpenAI 验证 Codex PAT，请稍后重试")
+        }
+        Error::PersonalAccessToken(PersonalAccessTokenError::InvalidResponse) => (
+            true,
+            "OpenAI 返回的 Codex PAT 身份资料不完整或格式无效，请稍后重试",
+        ),
+    };
+    CredentialImportFailure {
+        index,
+        code,
+        retryable,
+        message,
+    }
+}
+
+pub(crate) const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'static str {
+    match error {
+        CodexCredentialAdminError::PersonalAccessToken(_) => {
+            "personal_access_token_validation_failed"
+        }
+        CodexCredentialAdminError::InvalidInput => "invalid_input",
+        CodexCredentialAdminError::InvalidCredential => "invalid_credential",
+        CodexCredentialAdminError::NotFound => "not_found",
+        CodexCredentialAdminError::MissingRefreshToken => "missing_refresh_token",
+        CodexCredentialAdminError::RefreshLeaseUnavailable => "refresh_lease_unavailable",
+        CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
+        CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
+        CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
+        CodexCredentialAdminError::RefreshUpstream { .. } => "refresh_upstream_failed",
+        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
+        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
+        CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }
 
@@ -861,86 +937,96 @@ impl CodexCredentialAdminService {
             return Err(CodexCredentialAdminError::InvalidInput);
         }
         let mut accounts = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let account_id = format!("acct_{}", uuid::Uuid::now_v7().simple());
-            let typed_account_id = ProviderAccountId::new(account_id.clone())
-                .map_err(|_| CodexCredentialAdminError::InvalidInput)?;
-            let (mut secret, mut access_token_expires_at) = self
-                .resolve_import_tokens(
-                    &typed_account_id,
-                    candidate.authentication.access_token.clone(),
-                    candidate.authentication.refresh_token.clone(),
-                    candidate.authentication.id_token.clone(),
-                    candidate.outbound_proxy.as_ref(),
-                )
-                .await?;
-            let metadata = if secret
-                .access_token
-                .expose_secret()
-                .trim()
-                .starts_with("at-")
-            {
-                let token = secret.access_token.expose_secret().trim();
-                let metadata = self
-                    .personal_access_token_client
-                    .as_ref()
-                    .ok_or(PersonalAccessTokenError::Unavailable)?
-                    .personal_access_token_metadata(token, candidate.outbound_proxy.as_ref())
+        let mut failures = Vec::new();
+        for (index, candidate) in candidates.into_iter().enumerate() {
+            let result: Result<NewProviderAccount, CodexCredentialAdminError> = async {
+                let account_id = format!("acct_{}", uuid::Uuid::now_v7().simple());
+                let typed_account_id = ProviderAccountId::new(account_id.clone())
+                    .map_err(|_| CodexCredentialAdminError::InvalidInput)?;
+                let (mut secret, mut access_token_expires_at) = self
+                    .resolve_import_tokens(
+                        &typed_account_id,
+                        candidate.authentication.access_token.clone(),
+                        candidate.authentication.refresh_token.clone(),
+                        candidate.authentication.id_token.clone(),
+                        candidate.outbound_proxy.as_ref(),
+                    )
                     .await?;
-                secret = CodexOAuthSecret {
-                    access_token: SecretString::from(token),
-                    refresh_token: None,
-                    id_token: None,
+                let metadata = if secret
+                    .access_token
+                    .expose_secret()
+                    .trim()
+                    .starts_with("at-")
+                {
+                    let token = secret.access_token.expose_secret().trim();
+                    let metadata = self
+                        .personal_access_token_client
+                        .as_ref()
+                        .ok_or(PersonalAccessTokenError::Unavailable)?
+                        .personal_access_token_metadata(token, candidate.outbound_proxy.as_ref())
+                        .await?;
+                    secret = CodexOAuthSecret {
+                        access_token: SecretString::from(token),
+                        refresh_token: None,
+                        id_token: None,
+                    };
+                    access_token_expires_at = None;
+                    metadata
+                } else {
+                    // 普通 OAuth 仍按 ID token、access token 的顺序投影，不调用 whoami。
+                    let id_metadata = secret
+                        .id_token
+                        .as_ref()
+                        .and_then(|token| parse_chatgpt_jwt_claims(token.expose_secret()).ok())
+                        .unwrap_or_default();
+                    let access_metadata =
+                        parse_chatgpt_jwt_claims(secret.access_token.expose_secret())
+                            .unwrap_or_default();
+                    CodexOAuthMetadata {
+                        email: id_metadata.email.or(access_metadata.email),
+                        chatgpt_plan_type: id_metadata
+                            .chatgpt_plan_type
+                            .or(access_metadata.chatgpt_plan_type),
+                        chatgpt_user_id: id_metadata
+                            .chatgpt_user_id
+                            .or(access_metadata.chatgpt_user_id),
+                        chatgpt_account_id: id_metadata
+                            .chatgpt_account_id
+                            .or(access_metadata.chatgpt_account_id),
+                    }
                 };
-                access_token_expires_at = None;
-                metadata
-            } else {
-                // 普通 OAuth 仍按 ID token、access token 的顺序投影，不调用 whoami。
-                let id_metadata = secret
-                    .id_token
-                    .as_ref()
-                    .and_then(|token| parse_chatgpt_jwt_claims(token.expose_secret()).ok())
-                    .unwrap_or_default();
-                let access_metadata = parse_chatgpt_jwt_claims(secret.access_token.expose_secret())
-                    .unwrap_or_default();
-                CodexOAuthMetadata {
-                    email: id_metadata.email.or(access_metadata.email),
-                    chatgpt_plan_type: id_metadata
-                        .chatgpt_plan_type
-                        .or(access_metadata.chatgpt_plan_type),
-                    chatgpt_user_id: id_metadata
-                        .chatgpt_user_id
-                        .or(access_metadata.chatgpt_user_id),
-                    chatgpt_account_id: id_metadata
-                        .chatgpt_account_id
-                        .or(access_metadata.chatgpt_account_id),
-                }
-            };
-            let prepared =
-                CodexCredentialAdmin.prepare_unresolved_oauth(UnresolvedCodexOAuthCredential {
-                    account_id,
-                    name: candidate
-                        .name
-                        .clone()
-                        .or_else(|| candidate.email.clone())
-                        .or_else(|| metadata.email.clone())
-                        .filter(|name| !name.trim().is_empty())
-                        .unwrap_or_else(|| "Codex OAuth".to_owned()),
-                    installation_id: uuid::Uuid::new_v4().to_string(),
-                    secret,
-                    metadata,
-                    access_token_expires_at,
-                    next_refresh_at: None,
-                    enabled: true,
-                })?;
-            accounts.push(NewProviderAccount {
-                account: prepared
-                    .account
-                    .with_outbound_proxy(candidate.outbound_proxy),
-                credential: prepared.credential,
-            });
+                let prepared = CodexCredentialAdmin.prepare_unresolved_oauth(
+                    UnresolvedCodexOAuthCredential {
+                        account_id,
+                        name: candidate
+                            .name
+                            .clone()
+                            .or_else(|| candidate.email.clone())
+                            .or_else(|| metadata.email.clone())
+                            .filter(|name| !name.trim().is_empty())
+                            .unwrap_or_else(|| "Codex OAuth".to_owned()),
+                        installation_id: uuid::Uuid::new_v4().to_string(),
+                        secret,
+                        metadata,
+                        access_token_expires_at,
+                        next_refresh_at: None,
+                        enabled: true,
+                    },
+                )?;
+                Ok(NewProviderAccount {
+                    account: prepared
+                        .account
+                        .with_outbound_proxy(candidate.outbound_proxy),
+                    credential: prepared.credential,
+                })
+            }
+            .await;
+            match result {
+                Ok(account) => accounts.push(account),
+                Err(error) => failures.push(import_failure(&error, index)),
+            }
         }
-        Ok(PreparedCodexAccountImport { accounts })
+        Ok(PreparedCodexAccountImport { accounts, failures })
     }
 
     async fn resolve_import_tokens(

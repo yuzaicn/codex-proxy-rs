@@ -97,17 +97,17 @@ async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
     let refresh_token_marker = "refresh-import-secret-marker";
 
-    let error = service
+    let prepared = service
         .prepare_import_document(serde_json::json!({"refreshToken": refresh_token_marker}))
         .await
-        .expect_err("rate-limited import must fail");
+        .expect("rate-limited import must return an item failure");
 
-    assert!(matches!(
-        error,
-        provider_openai::credential::CodexCredentialAdminError::RefreshRateLimited {
-            retry_after: Some(retry_after)
-        } if retry_after == Duration::from_secs(27)
-    ));
+    assert!(prepared.accounts().is_empty());
+    assert_eq!(prepared.failures().len(), 1);
+    assert_eq!(prepared.failures()[0].index, 0);
+    assert_eq!(prepared.failures()[0].code, "refresh_rate_limited");
+    assert!(prepared.failures()[0].retryable);
+    assert_eq!(prepared.failures()[0].message, "上游限流，请稍后重试");
     let events = captured.json_events();
     let fields = events
         .iter()
@@ -144,6 +144,27 @@ async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or
     let serialized_event = serde_json::to_string(fields).expect("serialize captured fields");
     assert!(!serialized_event.contains(refresh_token_marker));
     assert!(!serialized_event.contains(response_body_marker));
+}
+
+struct MixedRefresher;
+
+#[async_trait]
+impl TokenRefresher for MixedRefresher {
+    async fn refresh(&self, refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
+        if refresh_token == "bad" {
+            return Err(RefreshFailure::InvalidGrant {
+                message: Some("upstream detail must not escape".to_owned()),
+                upstream: None,
+            });
+        }
+        Ok(TokenPair {
+            access_token: Some(test_jwt(serde_json::json!({
+                "https://api.openai.com/auth": {"chatgpt_user_id": refresh_token}
+            }))),
+            refresh_token: None,
+            id_token: None,
+        })
+    }
 }
 
 #[tokio::test]
@@ -266,6 +287,28 @@ impl TokenRefresher for UnusedRefresher {
     async fn refresh(&self, _refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
         panic!("a direct access-token import must not refresh its refresh token")
     }
+}
+
+#[tokio::test]
+async fn oauth_import_collects_refresh_failures_and_keeps_successes() {
+    let service = CodexCredentialAdminService::new(
+        Arc::new(MixedRefresher),
+        Arc::new(TestLeaseCoordinator::default()),
+        runtime_policy(),
+    );
+    let prepared = service
+        .prepare_import_document(serde_json::json!({
+            "accounts": [{"refreshToken": "good"}, {"refreshToken": "bad"}, {"refreshToken": "good-2"}]
+        }))
+        .await
+        .expect("batch preparation should continue after one failed refresh");
+    assert_eq!(prepared.accounts().len(), 2);
+    assert_eq!(prepared.failures().len(), 1);
+    assert_eq!(prepared.failures()[0].index, 1);
+    assert_eq!(prepared.failures()[0].code, "refresh_rejected");
+    assert!(!prepared.failures()[0].retryable);
+    assert_eq!(prepared.failures()[0].message, "该令牌已失效，请更换");
+    assert!(!format!("{prepared:?}").contains("upstream detail"));
 }
 
 #[tokio::test]
@@ -521,18 +564,17 @@ async fn pat_import_times_out_without_falling_back_to_document_identity() {
         runtime_policy(),
     )
     .with_personal_access_token_client(Arc::new(client));
-    let error = service
+    let prepared = service
         .prepare_import_document(serde_json::json!({
             "accessToken": "at-timeout-token", "userId": "untrusted-user"
         }))
         .await
-        .expect_err("timeout must abort PAT import");
+        .expect("timeout should be returned as an item failure");
     assert_eq!(
-        error,
-        provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-            PersonalAccessTokenError::Unavailable
-        )
+        prepared.failures()[0].code,
+        "personal_access_token_validation_failed"
     );
+    assert!(prepared.failures()[0].retryable);
 }
 
 #[tokio::test]
@@ -542,18 +584,17 @@ async fn pat_import_requires_a_validation_client() {
         Arc::new(TestLeaseCoordinator::default()),
         runtime_policy(),
     );
-    let error = service
+    let prepared = service
         .prepare_import_document(serde_json::json!({
             "accessToken": "at-test-token", "userId": "untrusted-user"
         }))
         .await
-        .expect_err("PAT cannot be imported without validation");
+        .expect("missing validation client should be an item failure");
     assert_eq!(
-        error,
-        provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-            PersonalAccessTokenError::Unavailable
-        )
+        prepared.failures()[0].code,
+        "personal_access_token_validation_failed"
     );
+    assert!(prepared.failures()[0].retryable);
 }
 
 #[tokio::test]
@@ -616,17 +657,19 @@ async fn pat_import_fails_closed_for_rejection_and_unavailable_upstream_without_
             .expect(1)
             .mount(&server)
             .await;
-        let error = pat_service(&server)
+        let prepared = pat_service(&server)
             .prepare_import_document(serde_json::json!({
                 "accessToken": "at-request-secret-marker", "userId": "document-user"
             }))
             .await
-            .expect_err("no account may be prepared after failed validation");
+            .expect("failed PAT validation should be an item failure");
+        let failure = &prepared.failures()[0];
+        assert_eq!(failure.code, "personal_access_token_validation_failed");
         assert_eq!(
-            error,
-            provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(expected)
+            failure.retryable,
+            matches!(expected, PersonalAccessTokenError::Unavailable)
         );
-        let message = format!("{error} {error:?}");
+        let message = format!("{} {}", failure.message, failure.code);
         assert!(!message.contains("pat-response-secret-marker"));
         assert!(!message.contains("at-request-secret-marker"));
     }
@@ -657,18 +700,17 @@ async fn pat_import_rejects_missing_or_invalid_whoami_identity_fields() {
                 .expect(1)
                 .mount(&server)
                 .await;
-            let error = pat_service(&server)
+            let prepared = pat_service(&server)
                 .prepare_import_document(serde_json::json!({
                     "access_token": "at-test-token", "user_id": "not-a-fallback"
                 }))
                 .await
-                .expect_err("malformed whoami must not fall back to document identity");
+                .expect("malformed whoami should be an item failure");
             assert_eq!(
-                error,
-                provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-                    PersonalAccessTokenError::InvalidResponse
-                )
+                prepared.failures()[0].code,
+                "personal_access_token_validation_failed"
             );
+            assert!(prepared.failures()[0].retryable);
         }
     }
 }
@@ -686,17 +728,16 @@ async fn pat_import_rejects_invalid_json_and_oversized_chunked_success_bodies() 
             .expect(1)
             .mount(&server)
             .await;
-        let error = pat_service(&server)
+        let prepared = pat_service(&server)
             .prepare_import_document(serde_json::json!({"accessToken": "at-test-token"}))
             .await
-            .expect_err("invalid body");
+            .expect("invalid body should be an item failure");
         assert_eq!(
-            error,
-            provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-                PersonalAccessTokenError::InvalidResponse
-            )
+            prepared.failures()[0].code,
+            "personal_access_token_validation_failed"
         );
-        assert!(!format!("{error:?}").contains("secret-marker"));
+        assert!(prepared.failures()[0].retryable);
+        assert!(!format!("{:?}", prepared.failures()[0]).contains("secret-marker"));
     }
 }
 
@@ -709,16 +750,15 @@ async fn pat_import_does_not_follow_redirects_or_forward_bearer_to_another_endpo
         .expect(1)
         .mount(&server)
         .await;
-    let error = pat_service(&server)
+    let prepared = pat_service(&server)
         .prepare_import_document(serde_json::json!({"accessToken": "at-test-token"}))
         .await
-        .expect_err("redirects are not accepted");
+        .expect("redirect failure should be an item failure");
     assert_eq!(
-        error,
-        provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-            PersonalAccessTokenError::Unavailable
-        )
+        prepared.failures()[0].code,
+        "personal_access_token_validation_failed"
     );
+    assert!(prepared.failures()[0].retryable);
     assert!(
         destination
             .received_requests()
@@ -733,16 +773,15 @@ async fn pat_import_rejects_malformed_tokens_before_sending_a_request() {
     let server = MockServer::start().await;
     let service = pat_service(&server);
     for token in ["at-", "at-has space", "at-has\nnewline", "at-has\0control"] {
-        let error = service
+        let prepared = service
             .prepare_import_document(serde_json::json!({"accessToken": token}))
             .await
-            .expect_err("invalid PAT");
+            .expect("invalid PAT should be an item failure");
         assert_eq!(
-            error,
-            provider_openai::credential::CodexCredentialAdminError::PersonalAccessToken(
-                PersonalAccessTokenError::InvalidToken
-            )
+            prepared.failures()[0].code,
+            "personal_access_token_validation_failed"
         );
+        assert!(!prepared.failures()[0].retryable);
     }
     assert!(
         server
@@ -944,7 +983,12 @@ async fn pat_import_uses_account_proxy_without_direct_fallback() {
             );
             assert!(prepared.accounts()[0].account.outbound_proxy().is_some());
         } else {
-            assert!(imported.is_err(), "proxy failure must abort PAT import");
+            let prepared = imported.expect("proxy failure should be an item failure");
+            assert_eq!(
+                prepared.failures()[0].code,
+                "personal_access_token_validation_failed"
+            );
+            assert!(prepared.failures()[0].retryable);
         }
         assert!(
             origin

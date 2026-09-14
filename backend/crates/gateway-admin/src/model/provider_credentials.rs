@@ -77,8 +77,24 @@ impl fmt::Debug for ImportCredentials {
 /// 批量导入提交结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialImportResult {
-    pub config_revision: Revision,
+    /// Configuration revision produced by a store commit.
+    ///
+    /// A syntactically valid import whose credentials all fail during
+    /// preparation performs no store mutation and therefore has no revision.
+    pub config_revision: Option<Revision>,
     pub credential_ids: Vec<ProviderAccountId>,
+    pub created_count: usize,
+    pub updated_count: usize,
+    pub failures: Vec<CredentialImportFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialImportFailure {
+    /// Zero-based position in the submitted document.
+    pub index: usize,
+    pub code: &'static str,
+    pub retryable: bool,
+    pub message: &'static str,
 }
 
 /// Provider 解析导入文档时只接收不透明文档，不接触 revision 或审计上下文。
@@ -122,6 +138,7 @@ pub struct PreparedCredentialCreate {
 pub struct PreparedCredentialImport {
     pub provider_kind: ProviderKind,
     pub credentials: Vec<PreparedCredentialCreate>,
+    pub failures: Vec<CredentialImportFailure>,
 }
 
 /// Admin 交给 Store 的导入事务命令。

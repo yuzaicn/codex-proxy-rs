@@ -1476,6 +1476,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
         .await
         .expect("create imported account");
     assert_eq!(imported.account_ids, ["acct_admin_upsert"]);
+    assert_eq!(imported.created_count, 1);
+    assert_eq!(imported.updated_count, 0);
     sqlx::query(
         "update provider_accounts
          set provider_quota_json = '{}'::jsonb, quota_observed_at = now(), updated_at = now()
@@ -1500,6 +1502,8 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
         .await
         .expect("update the same imported identity");
     assert_eq!(imported.account_ids, ["acct_admin_upsert"]);
+    assert_eq!(imported.created_count, 0);
+    assert_eq!(imported.updated_count, 1);
     let revision = imported.config_revision;
     assert_eq!(revision.get(), 3);
     let row: (
@@ -1537,6 +1541,52 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
         .await
         .expect_err("an existing account ID must not be rebound");
     assert_eq!(current_revision(&database.pool).await, 3);
+
+    database.close().await;
+}
+
+#[tokio::test]
+async fn admin_import_mixed_batch_counts_created_and_updated_in_submission_order() {
+    let Some(database) = TestDatabase::create("provider_account_admin_mixed_upsert").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    repository
+        .insert_provider_account(account(
+            "acct_admin_mixed_existing",
+            "user-admin-mixed-existing",
+        ))
+        .await
+        .expect("seed existing imported identity");
+
+    let mut existing = account("acct_admin_mixed_candidate", "user-admin-mixed-existing");
+    existing.provider_credentials_json = credential_json("mixed-updated-secret");
+    let imported = repository
+        .import_provider_accounts(ImportProviderAccounts {
+            settings: None,
+            outbound_proxy: None,
+            scope: ProviderAccountAdminScope {
+                provider_kind: "openai".to_owned(),
+            },
+            accounts: vec![
+                existing,
+                account("acct_admin_mixed_new", "user-admin-mixed-new"),
+            ],
+            audit: audit(
+                "audit_admin_mixed_upsert",
+                "import",
+                "acct_admin_mixed_existing,acct_admin_mixed_new",
+            ),
+        })
+        .await
+        .expect("import mixed created and updated identities");
+
+    assert_eq!(imported.created_count, 1);
+    assert_eq!(imported.updated_count, 1);
+    assert_eq!(
+        imported.account_ids,
+        ["acct_admin_mixed_existing", "acct_admin_mixed_new"]
+    );
 
     database.close().await;
 }

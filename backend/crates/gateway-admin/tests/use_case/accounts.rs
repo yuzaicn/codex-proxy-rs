@@ -34,13 +34,13 @@ use gateway_admin::{
             AuthorizationCommit, AuthorizationCommitGuard, AuthorizationCredentialCommit,
             AuthorizationMutationTarget, AuthorizationStarted, CompleteAuthorization,
             ConsumeProviderResetCredit, CredentialCommitGuard, CredentialDetails,
-            CredentialImportCommit, CredentialImportResult, CredentialMutationResult,
-            CredentialRotationCommit, PendingAuthorizationMutation, PrepareCredentialImport,
-            PrepareCredentialRefresh, PrepareCredentialRotation, PreparedAuthorizationCommit,
-            PreparedAuthorizationCredential, PreparedCredentialCreate, PreparedCredentialImport,
-            PreparedCredentialRotation, PreparedCredentialRotationFacts, ProviderDocument,
-            ProviderExport, ProviderExportCredentialInput, ProviderModels, ProviderQuota,
-            ProviderQuotaRequest, ProviderQuotaWindow, ProviderResetCreditResult,
+            CredentialImportCommit, CredentialImportFailure, CredentialImportResult,
+            CredentialMutationResult, CredentialRotationCommit, PendingAuthorizationMutation,
+            PrepareCredentialImport, PrepareCredentialRefresh, PrepareCredentialRotation,
+            PreparedAuthorizationCommit, PreparedAuthorizationCredential, PreparedCredentialCreate,
+            PreparedCredentialImport, PreparedCredentialRotation, PreparedCredentialRotationFacts,
+            ProviderDocument, ProviderExport, ProviderExportCredentialInput, ProviderModels,
+            ProviderQuota, ProviderQuotaRequest, ProviderQuotaWindow, ProviderResetCreditResult,
             QuotaLocalUsageAttribution,
         },
         settings::{
@@ -70,6 +70,7 @@ pub(crate) struct FakeProviderAdmin {
     retry_authorization_after_abort: Mutex<bool>,
     export_inputs: Mutex<Vec<ProviderExportCredentialInput>>,
     import_account_ids: Mutex<Vec<String>>,
+    import_failures: Mutex<Vec<CredentialImportFailure>>,
     quota_requests: Mutex<Vec<ProviderQuotaRequest>>,
     quota_started: tokio::sync::Notify,
     quota_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
@@ -90,6 +91,7 @@ impl FakeProviderAdmin {
             retry_authorization_after_abort: Mutex::new(false),
             export_inputs: Mutex::new(Vec::new()),
             import_account_ids: Mutex::new(vec!["acct_prepared".to_owned()]),
+            import_failures: Mutex::new(Vec::new()),
             quota_requests: Mutex::new(Vec::new()),
             quota_started: tokio::sync::Notify::new(),
             quota_gate: Mutex::new(None),
@@ -142,6 +144,13 @@ impl FakeProviderAdmin {
             .iter()
             .map(|account_id| (*account_id).to_owned())
             .collect();
+    }
+
+    pub(super) fn set_import_failures(&self, failures: Vec<CredentialImportFailure>) {
+        *self
+            .import_failures
+            .lock()
+            .expect("provider import failures") = failures;
     }
 
     pub(super) fn quota_requests(&self) -> Vec<ProviderQuotaRequest> {
@@ -328,6 +337,11 @@ impl ProviderAdmin for FakeProviderAdmin {
             .lock()
             .expect("provider import account IDs")
             .clone();
+        let failures = self
+            .import_failures
+            .lock()
+            .expect("provider import failures")
+            .clone();
         Ok(PreparedCredentialImport {
             provider_kind: self.kind.clone(),
             credentials: account_ids
@@ -336,6 +350,7 @@ impl ProviderAdmin for FakeProviderAdmin {
                     prepared_create_with_id(self.kind.clone(), &account_id, "prepared-import")
                 })
                 .collect(),
+            failures,
         })
     }
 
@@ -746,14 +761,20 @@ impl AccountStore for FakeAccountStore {
         self.record("store.commit_import");
         self.record_context(context);
         self.require_commit()?;
+        let gateway_admin::model::provider_credentials::PreparedCredentialImport {
+            credentials,
+            failures,
+            ..
+        } = command.prepared;
         Ok(CredentialImportResult {
-            config_revision: revision(2),
-            credential_ids: command
-                .prepared
-                .credentials
+            config_revision: Some(revision(2)),
+            credential_ids: credentials
                 .into_iter()
                 .map(|credential| credential.account_id)
                 .collect(),
+            created_count: 0,
+            updated_count: 0,
+            failures,
         })
     }
 

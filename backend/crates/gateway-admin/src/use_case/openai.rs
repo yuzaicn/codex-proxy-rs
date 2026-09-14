@@ -104,6 +104,18 @@ impl OpenAiService for DefaultOpenAiService {
             &prepared,
             "OpenAI credential import",
         )?;
+        if prepared.credentials.is_empty() && !prepared.failures.is_empty() {
+            let failures = prepared.failures;
+            drop(proxy_reservation);
+            return Ok(CredentialImportResult {
+                // No credentials were committed, so no configuration revision was produced.
+                config_revision: None,
+                credential_ids: Vec::new(),
+                created_count: 0,
+                updated_count: 0,
+                failures,
+            });
+        }
         let result = self
             .accounts
             .commit_credential_import(
@@ -117,10 +129,14 @@ impl OpenAiService for DefaultOpenAiService {
             .await
             .map_err(|error| map_store_error(error, "OpenAI credential import"))?;
         drop(proxy_reservation);
+        // 全失败时不会发生 store 提交，也就没有配置版本可发布；此时上面的分支已提前返回。
+        let committed_revision = result
+            .config_revision
+            .ok_or_else(|| AdminError::internal("导入提交未返回配置版本"))?;
         publish_credentials_and_observe_quota(
             &self.provider,
             self.snapshot.as_ref(),
-            result.config_revision,
+            committed_revision,
             &result.credential_ids,
             &context.request_id,
         )

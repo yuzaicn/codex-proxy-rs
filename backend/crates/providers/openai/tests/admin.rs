@@ -1059,7 +1059,7 @@ async fn initialized_provider_reports_a_safe_pat_format_error_before_network_acc
     let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
         .await
         .expect("OpenAI bundle");
-    let error = bundle
+    let prepared = bundle
         .admin_provider()
         .prepare_import(PrepareCredentialImport {
             default_outbound_proxy: None,
@@ -1069,14 +1069,19 @@ async fn initialized_provider_reports_a_safe_pat_format_error_before_network_acc
             )]))),
         })
         .await
-        .expect_err("PAT format must be checked by the initialized provider");
-    assert_eq!(error.kind(), ProviderAdminErrorKind::Invalid);
+        .expect("PAT format failure should be returned as an item failure");
+    assert_eq!(prepared.credentials.len(), 0);
+    assert_eq!(prepared.failures.len(), 1);
     assert_eq!(
-        error.public_message(),
-        Some("Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符")
+        prepared.failures[0].code,
+        "personal_access_token_validation_failed"
     );
-    assert!(error.message().is_none());
-    assert!(!format!("{error:?}").contains("sensitive-token"));
+    assert!(!prepared.failures[0].retryable);
+    assert_eq!(
+        prepared.failures[0].message,
+        "Codex PAT 格式无效：应为 at- 开头的完整令牌，不能包含空白或控制字符"
+    );
+    assert!(!format!("{prepared:?}").contains("sensitive-token"));
 }
 
 #[tokio::test]
@@ -1282,7 +1287,7 @@ async fn openai_refresh_upstream_5xx_is_unavailable() {
 }
 
 #[tokio::test]
-async fn openai_import_rate_limit_preserves_retry_after() {
+async fn openai_import_rate_limit_is_reported_as_retryable_item_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
@@ -1306,7 +1311,7 @@ async fn openai_import_rate_limit_preserves_retry_after() {
         .await
         .expect("OpenAI bundle");
 
-    let error = bundle
+    let prepared = bundle
         .admin_provider()
         .prepare_import(PrepareCredentialImport {
             default_outbound_proxy: None,
@@ -1316,11 +1321,49 @@ async fn openai_import_rate_limit_preserves_retry_after() {
             )]))),
         })
         .await
-        .expect_err("upstream rate limit must abort import");
+        .expect("upstream rate limit must be isolated to the failed item");
 
-    assert_eq!(error.kind(), ProviderAdminErrorKind::RateLimited);
-    assert_eq!(error.retry_after(), Some(Duration::from_secs(33)));
-    assert_eq!(error.public_message(), Some("上游限流，请稍后重试"));
+    assert!(prepared.credentials.is_empty());
+    assert_eq!(prepared.failures.len(), 1);
+    assert_eq!(prepared.failures[0].index, 0);
+    assert_eq!(prepared.failures[0].code, "refresh_rate_limited");
+    assert!(prepared.failures[0].retryable);
+    assert_eq!(prepared.failures[0].message, "上游限流，请稍后重试");
+}
+
+#[tokio::test]
+async fn openai_import_upstream_5xx_is_reported_as_retryable_item_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream failure"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut config = valid_config();
+    config.config.auth.oauth_token_endpoint = format!("{}/oauth/token", server.uri());
+    let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
+        .await
+        .expect("OpenAI bundle");
+
+    let prepared = bundle
+        .admin_provider()
+        .prepare_import(PrepareCredentialImport {
+            default_outbound_proxy: None,
+            document: ProviderDocument::new(OpaqueProviderData::new(Map::from_iter([(
+                "refreshToken".to_owned(),
+                json!("refresh-import-secret"),
+            )]))),
+        })
+        .await
+        .expect("upstream unavailability must be isolated to the failed item");
+
+    assert!(prepared.credentials.is_empty());
+    assert_eq!(prepared.failures.len(), 1);
+    assert_eq!(prepared.failures[0].index, 0);
+    assert_eq!(prepared.failures[0].code, "refresh_upstream_unavailable");
+    assert!(prepared.failures[0].retryable);
+    assert_eq!(prepared.failures[0].message, "上游服务暂不可用，请稍后重试");
 }
 
 async fn reset_credit_admin(

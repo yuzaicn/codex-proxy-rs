@@ -218,9 +218,13 @@ impl PgAdminAccountStore {
         action: &str,
         outbound_proxy: Option<gateway_admin::model::proxies::ImportProxyBinding>,
     ) -> AdminStoreResult<CredentialImportResult> {
-        let provider_kind = prepared.provider_kind.as_str().to_owned();
-        let accounts = prepared
-            .credentials
+        let PreparedCredentialImport {
+            provider_kind,
+            credentials,
+            failures,
+        } = prepared;
+        let provider_kind = provider_kind.as_str().to_owned();
+        let accounts = credentials
             .into_iter()
             .map(prepared_account)
             .collect::<StoreResult<Vec<_>>>()
@@ -250,7 +254,7 @@ impl PgAdminAccountStore {
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
         Ok(CredentialImportResult {
-            config_revision: admin_revision(imported.config_revision)?,
+            config_revision: Some(admin_revision(imported.config_revision)?),
             credential_ids: imported
                 .account_ids
                 .into_iter()
@@ -263,6 +267,9 @@ impl PgAdminAccountStore {
                         "provider account import returned an invalid account ID",
                     )
                 })?,
+            created_count: imported.created_count,
+            updated_count: imported.updated_count,
+            failures,
         })
     }
 
@@ -563,11 +570,15 @@ impl AccountStore for PgAdminAccountStore {
                 let CredentialImportResult {
                     config_revision,
                     credential_ids,
+                    created_count: _,
+                    updated_count: _,
+                    failures: _,
                 } = self
                     .commit_prepared_import(
                         PreparedCredentialImport {
                             provider_kind: credential.provider_kind.clone(),
                             credentials: vec![credential],
+                            failures: Vec::new(),
                         },
                         command.settings,
                         context,
@@ -605,7 +616,13 @@ impl AccountStore for PgAdminAccountStore {
                         )
                     })?;
                 Ok(CredentialMutationResult {
-                    config_revision,
+                    config_revision: config_revision.ok_or_else(|| {
+                        AdminStoreError::new(
+                            AdminStoreErrorKind::Unavailable,
+                            ENTITY,
+                            "authorization import returned no configuration revision",
+                        )
+                    })?,
                     account_id,
                     credential_revision: Some(admin_revision(details.summary.credential_revision)?),
                 })
