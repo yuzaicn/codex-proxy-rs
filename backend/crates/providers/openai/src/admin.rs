@@ -55,6 +55,7 @@ use crate::credential::{
     CodexProfileStatisticsError, CodexQuotaWindow, CodexQuotaWindowKind, CodexQuotaWindowRole,
     CodexResetCreditsError, CompleteCodexOAuthAuthorization, CompletedCodexOAuthCredential,
     ExportManagedCodexCredential, StartCodexOAuthAuthorization, StoredCodexPendingAuthorization,
+    credential_admin_error_code,
 };
 use crate::credential::{
     CodexCredentialCodec, CodexOAuthSecret, oauth_owner_ref, parse_access_token_expiration,

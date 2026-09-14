@@ -1287,7 +1287,7 @@ async fn openai_refresh_upstream_5xx_is_unavailable() {
 }
 
 #[tokio::test]
-async fn openai_import_rate_limit_preserves_retry_after() {
+async fn openai_import_rate_limit_is_reported_as_retryable_item_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
@@ -1311,7 +1311,7 @@ async fn openai_import_rate_limit_preserves_retry_after() {
         .await
         .expect("OpenAI bundle");
 
-    let error = bundle
+    let prepared = bundle
         .admin_provider()
         .prepare_import(PrepareCredentialImport {
             default_outbound_proxy: None,
@@ -1321,11 +1321,49 @@ async fn openai_import_rate_limit_preserves_retry_after() {
             )]))),
         })
         .await
-        .expect_err("upstream rate limit must abort import");
+        .expect("upstream rate limit must be isolated to the failed item");
 
-    assert_eq!(error.kind(), ProviderAdminErrorKind::RateLimited);
-    assert_eq!(error.retry_after(), Some(Duration::from_secs(33)));
-    assert_eq!(error.public_message(), Some("上游限流，请稍后重试"));
+    assert!(prepared.credentials.is_empty());
+    assert_eq!(prepared.failures.len(), 1);
+    assert_eq!(prepared.failures[0].index, 0);
+    assert_eq!(prepared.failures[0].code, "refresh_rate_limited");
+    assert!(prepared.failures[0].retryable);
+    assert_eq!(prepared.failures[0].message, "上游限流，请稍后重试");
+}
+
+#[tokio::test]
+async fn openai_import_upstream_5xx_is_reported_as_retryable_item_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream failure"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut config = valid_config();
+    config.config.auth.oauth_token_endpoint = format!("{}/oauth/token", server.uri());
+    let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
+        .await
+        .expect("OpenAI bundle");
+
+    let prepared = bundle
+        .admin_provider()
+        .prepare_import(PrepareCredentialImport {
+            default_outbound_proxy: None,
+            document: ProviderDocument::new(OpaqueProviderData::new(Map::from_iter([(
+                "refreshToken".to_owned(),
+                json!("refresh-import-secret"),
+            )]))),
+        })
+        .await
+        .expect("upstream unavailability must be isolated to the failed item");
+
+    assert!(prepared.credentials.is_empty());
+    assert_eq!(prepared.failures.len(), 1);
+    assert_eq!(prepared.failures[0].index, 0);
+    assert_eq!(prepared.failures[0].code, "refresh_upstream_unavailable");
+    assert!(prepared.failures[0].retryable);
+    assert_eq!(prepared.failures[0].message, "上游服务暂不可用，请稍后重试");
 }
 
 async fn reset_credit_admin(

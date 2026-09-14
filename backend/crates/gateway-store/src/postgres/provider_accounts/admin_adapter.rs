@@ -254,7 +254,7 @@ impl PgAdminAccountStore {
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
         Ok(CredentialImportResult {
-            config_revision: admin_revision(imported.config_revision)?,
+            config_revision: Some(admin_revision(imported.config_revision)?),
             credential_ids: imported
                 .account_ids
                 .into_iter()
@@ -616,7 +616,13 @@ impl AccountStore for PgAdminAccountStore {
                         )
                     })?;
                 Ok(CredentialMutationResult {
-                    config_revision,
+                    config_revision: config_revision.ok_or_else(|| {
+                        AdminStoreError::new(
+                            AdminStoreErrorKind::Unavailable,
+                            ENTITY,
+                            "authorization import returned no configuration revision",
+                        )
+                    })?,
                     account_id,
                     credential_revision: Some(admin_revision(details.summary.credential_revision)?),
                 })

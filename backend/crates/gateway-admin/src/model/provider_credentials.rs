@@ -77,7 +77,11 @@ impl fmt::Debug for ImportCredentials {
 /// 批量导入提交结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialImportResult {
-    pub config_revision: Revision,
+    /// Configuration revision produced by a store commit.
+    ///
+    /// A syntactically valid import whose credentials all fail during
+    /// preparation performs no store mutation and therefore has no revision.
+    pub config_revision: Option<Revision>,
     pub credential_ids: Vec<ProviderAccountId>,
     pub created_count: usize,
     pub updated_count: usize,

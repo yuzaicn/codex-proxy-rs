@@ -112,10 +112,14 @@ impl XaiService for DefaultXaiService {
             .await
             .map_err(|error| map_store_error(error, "xAI credential import"))?;
         drop(proxy_reservation);
+        // 导入全失败时不产生配置版本，也就没有可发布的快照。
+        let committed_revision = result
+            .config_revision
+            .ok_or_else(|| AdminError::internal("导入提交未返回配置版本"))?;
         publish_credentials_and_observe_quota(
             &self.provider,
             self.snapshot.as_ref(),
-            result.config_revision,
+            committed_revision,
             &result.credential_ids,
             &context.request_id,
         )

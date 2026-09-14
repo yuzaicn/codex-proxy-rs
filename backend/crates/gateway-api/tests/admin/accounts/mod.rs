@@ -659,7 +659,7 @@ mod actions {
     #[test]
     fn account_import_response_should_emit_account_ids() {
         let response = AccountImportData::from_result(CredentialImportResult {
-            config_revision: Revision::new(8).expect("revision"),
+            config_revision: Some(Revision::new(8).expect("revision")),
             credential_ids: vec![ProviderAccountId::new("acct_imported").expect("account ID")],
             created_count: 1,
             updated_count: 0,

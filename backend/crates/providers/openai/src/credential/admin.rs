@@ -400,6 +400,8 @@ pub(crate) fn import_failure(
         Error::RefreshRejected { .. } => (false, "该令牌已失效，请更换"),
         Error::AccountBanned { .. } => (false, "该账号已被封禁，请更换账号"),
         Error::RefreshUnavailable => (true, "暂时无法连接上游，请稍后重试"),
+        Error::RefreshRateLimited { .. } => (true, "上游限流，请稍后重试"),
+        Error::RefreshUpstreamUnavailable => (true, "上游服务暂不可用，请稍后重试"),
         Error::RefreshAmbiguous { .. } => (true, "上游执行结果未知，请刷新状态后再决定是否重试"),
         Error::RefreshLeaseUnavailable => (true, "刷新资源暂时不可用，请稍后重试"),
         Error::InvalidCredential => (false, "凭据格式无效，请检查后重试"),
@@ -443,6 +445,8 @@ pub(crate) const fn credential_admin_error_code(error: &CodexCredentialAdminErro
         CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
         CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
         CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
+        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
+        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
         CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }

@@ -120,6 +120,7 @@ async fn openai_import_should_return_all_failures_without_store_commit() {
         .expect("valid document should return a business result");
 
     assert!(result.credential_ids.is_empty());
+    assert_eq!(result.config_revision, None);
     assert_eq!(result.created_count, 0);
     assert_eq!(result.updated_count, 0);
     assert_eq!(result.failures.len(), 2);

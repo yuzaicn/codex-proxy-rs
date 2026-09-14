@@ -768,7 +768,7 @@ impl AccountStore for FakeAccountStore {
             ..
         } = command.prepared;
         Ok(CredentialImportResult {
-            config_revision: revision(2),
+            config_revision: Some(revision(2)),
             credential_ids: credentials
                 .into_iter()
                 .map(|credential| credential.account_id)

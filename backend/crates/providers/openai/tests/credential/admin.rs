@@ -97,17 +97,17 @@ async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
     let refresh_token_marker = "refresh-import-secret-marker";
 
-    let error = service
+    let prepared = service
         .prepare_import_document(serde_json::json!({"refreshToken": refresh_token_marker}))
         .await
-        .expect_err("rate-limited import must fail");
+        .expect("rate-limited import must return an item failure");
 
-    assert!(matches!(
-        error,
-        provider_openai::credential::CodexCredentialAdminError::RefreshRateLimited {
-            retry_after: Some(retry_after)
-        } if retry_after == Duration::from_secs(27)
-    ));
+    assert!(prepared.accounts().is_empty());
+    assert_eq!(prepared.failures().len(), 1);
+    assert_eq!(prepared.failures()[0].index, 0);
+    assert_eq!(prepared.failures()[0].code, "refresh_rate_limited");
+    assert!(prepared.failures()[0].retryable);
+    assert_eq!(prepared.failures()[0].message, "上游限流，请稍后重试");
     let events = captured.json_events();
     let fields = events
         .iter()
