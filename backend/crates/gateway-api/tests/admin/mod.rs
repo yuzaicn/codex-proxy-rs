@@ -878,6 +878,12 @@ impl DetectionStore for UnusedStore {
         Err(unavailable("detection rounds"))
     }
 
+    async fn latest_detection_checked_at(
+        &self,
+    ) -> AdminStoreResult<Option<chrono::DateTime<chrono::Utc>>> {
+        Err(unavailable("latest detection timestamp"))
+    }
+
     async fn list_detection_targets(
         &self,
         _: &gateway_admin::model::detection::DetectionAccountScope,

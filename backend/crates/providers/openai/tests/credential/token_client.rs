@@ -441,6 +441,7 @@ async fn unauthorized_should_preserve_upstream_details_and_remain_retryable() {
         }
     }"#;
     let failure = refresh_failure(401, body).await;
+    assert!(failure.is_retryable());
 
     let RefreshFailure::Transport { message, upstream } = failure else {
         panic!("production policy gives every 401 a bounded recovery window");
@@ -521,19 +522,127 @@ async fn recognized_refresh_code_should_be_permanent_on_non_unauthorized_status(
         )
         .await;
         assert!(
-            matches!(failure, RefreshFailure::InvalidGrant { .. }),
+            matches!(&failure, RefreshFailure::InvalidGrant { .. }),
             "official refresh code must take precedence for status {status}"
         );
+        assert!(!failure.is_retryable());
     }
 }
 
 #[tokio::test]
-async fn unknown_server_error_or_rate_limit_should_remain_transient() {
-    let body = r#"{"error":{"code":"temporarily_unavailable","message":"Try again."}}"#;
-    for status in [500, 502, 503, 429] {
-        let failure = refresh_failure(status, body).await;
-        assert_transport_failure(&failure, status, Some("Try again."), body);
+async fn recognized_refresh_codes_should_all_be_permanent() {
+    for code in [
+        "refresh_token_expired",
+        "refresh_token_reused",
+        "refresh_token_invalidated",
+    ] {
+        let body = format!(r#"{{"error":{{"code":"{code}","message":"Rejected."}}}}"#);
+        let failure = refresh_failure(400, &body).await;
+
+        assert_eq!(failure.classification(), "invalid-grant", "code {code}");
+        assert!(!failure.is_retryable(), "code {code}");
     }
+}
+
+#[tokio::test]
+async fn rate_limit_should_be_retryable_and_preserve_bounded_retry_after() {
+    let body = r#"{"error":{"code":"temporarily_unavailable","message":"Try again."}}"#;
+    for (header, expected) in [
+        (Some("0"), Some(Duration::ZERO)),
+        (None, None),
+        (Some("42"), Some(Duration::from_secs(42))),
+        (Some("999"), Some(Duration::from_secs(300))),
+    ] {
+        let mut response = ResponseTemplate::new(429).set_body_string(body);
+        if let Some(header) = header {
+            response = response.insert_header("retry-after", header);
+        }
+        let failure = refresh_failure_with_response(response).await;
+        let RefreshFailure::UpstreamRateLimited {
+            message,
+            upstream,
+            retry_after,
+        } = &failure
+        else {
+            panic!("429 must classify as an upstream rate limit");
+        };
+        assert_eq!(message.as_deref(), Some("Try again."));
+        assert_eq!(*retry_after, expected);
+        assert_eq!(upstream.as_deref().expect("upstream details").status(), 429);
+        assert_eq!(failure.classification(), "upstream-rate-limited");
+        assert!(failure.is_retryable());
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_should_normalize_http_date_retry_after_with_ceiling() {
+    let retry_at = SystemTime::now() + Duration::from_millis(1_500);
+    let retry_after = httpdate::fmt_http_date(retry_at);
+    let response = ResponseTemplate::new(429)
+        .insert_header("retry-after", retry_after)
+        .set_body_string(r#"{"error":{"message":"Try again."}}"#);
+    let failure = refresh_failure_with_response(response).await;
+
+    let RefreshFailure::UpstreamRateLimited { retry_after, .. } = failure else {
+        panic!("429 must classify as an upstream rate limit");
+    };
+    assert!(matches!(retry_after, Some(delay) if (1..=3).contains(&delay.as_secs())));
+}
+
+#[tokio::test]
+async fn server_errors_should_be_retryable_upstream_unavailable_failures() {
+    let body = r#"{"error":{"code":"temporarily_unavailable","message":"Try again."}}"#;
+    for status in [500, 502, 503] {
+        let failure = refresh_failure(status, body).await;
+        let RefreshFailure::UpstreamUnavailable { message, upstream } = &failure else {
+            panic!("status {status} must classify as upstream unavailable");
+        };
+        assert_eq!(message.as_deref(), Some("Try again."));
+        assert_eq!(
+            upstream.as_deref().expect("upstream details").status(),
+            status
+        );
+        assert_eq!(failure.classification(), "upstream-unavailable");
+        assert!(failure.is_retryable());
+    }
+}
+
+#[tokio::test]
+async fn timeout_should_remain_an_ambiguous_retryable_transport_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(serde_json::json!({"access_token": "too-late"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let timeout_client = OpenAiTokenClient::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(20))
+            .build()
+            .expect("test HTTP client"),
+        TokenClientConfig {
+            client_id: "test-public-client".to_owned(),
+            token_endpoint: format!("{}/oauth/token", server.uri()),
+        },
+        provider_openai::OpenAiConfig::default().wire_profile_state(),
+    );
+
+    let failure = timeout_client
+        .refresh("refresh-secret")
+        .await
+        .expect_err("timeout must fail");
+
+    assert!(matches!(
+        &failure,
+        RefreshFailure::Transport { upstream: None, .. }
+    ));
+    assert_eq!(failure.classification(), "transport-ambiguous");
+    assert!(failure.is_retryable());
 }
 
 fn assert_transport_failure(
@@ -556,10 +665,14 @@ fn assert_transport_failure(
 }
 
 async fn refresh_failure(status: u16, body: &str) -> RefreshFailure {
+    refresh_failure_with_response(ResponseTemplate::new(status).set_body_string(body)).await
+}
+
+async fn refresh_failure_with_response(response: ResponseTemplate) -> RefreshFailure {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
-        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+        .respond_with(response)
         .expect(1)
         .mount(&server)
         .await;
@@ -569,3 +682,4 @@ async fn refresh_failure(status: u16, body: &str) -> RefreshFailure {
         .await
         .expect_err("refresh must fail")
 }
+use std::time::{Duration, SystemTime};

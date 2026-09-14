@@ -1,13 +1,13 @@
 //! 重置卡检测 Worker：读取实时配置、更新账号观测，并安全地自动消费重置卡。
 
 use std::sync::{
-    Arc, Mutex, PoisonError,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::{StreamExt as _, future::BoxFuture, stream};
 use gateway_core::{
     account::{AccountStatus, ProviderAccountId},
@@ -96,7 +96,6 @@ pub struct ResetDetectionTask {
     accounts: Arc<dyn AccountStore>,
     account_runtime: Arc<dyn AccountRuntimeStore>,
     operations: Arc<dyn ResetDetectionAccountOperations>,
-    last_round_started_at: Mutex<Option<Instant>>,
     round_in_progress: AtomicBool,
 }
 
@@ -140,7 +139,6 @@ impl ResetDetectionTask {
             accounts,
             account_runtime,
             operations,
-            last_round_started_at: Mutex::new(None),
             round_in_progress: AtomicBool::new(false),
         }
     }
@@ -154,7 +152,7 @@ impl ResetDetectionTask {
         if !settings.enabled {
             return Ok(());
         }
-        let Some(_round_guard) = self.round_due(&settings) else {
+        let Some(_round_guard) = self.round_due(&settings).await? else {
             return Ok(());
         };
         let runtime = self
@@ -406,27 +404,32 @@ impl ResetDetectionTask {
         }
     }
 
-    fn round_due(&self, settings: &ResetDetectionSettings) -> Option<RoundGuard<'_>> {
+    async fn round_due(
+        &self,
+        settings: &ResetDetectionSettings,
+    ) -> Result<Option<RoundGuard<'_>>, WorkerTaskError> {
         if self.round_in_progress.swap(true, Ordering::Acquire) {
-            return None;
+            return Ok(None);
         }
         let interval = Duration::from_secs(u64::from(settings.poll_interval_secs.max(1)));
-        let mut guard = self
-            .last_round_started_at
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match *guard {
-            Some(started_at) if started_at.elapsed() < interval => {
+        let latest_observed_at = match self
+            .reset_detection
+            .latest_reset_detection_observed_at()
+            .await
+        {
+            Ok(observed_at) => observed_at,
+            Err(error) => {
                 self.round_in_progress.store(false, Ordering::Release);
-                None
+                return Err(store_error(error));
             }
-            _ => {
-                *guard = Some(Instant::now());
-                Some(RoundGuard {
-                    in_progress: &self.round_in_progress,
-                })
-            }
+        };
+        if latest_observed_at.is_some_and(|observed_at| is_within_interval(observed_at, interval)) {
+            self.round_in_progress.store(false, Ordering::Release);
+            return Ok(None);
         }
+        Ok(Some(RoundGuard {
+            in_progress: &self.round_in_progress,
+        }))
     }
 }
 
@@ -477,8 +480,10 @@ const fn admin_error_kind(kind: AdminErrorKind) -> &'static str {
         AdminErrorKind::NotFound => "not_found",
         AdminErrorKind::Conflict => "conflict",
         AdminErrorKind::RateLimited => "rate_limited",
+        AdminErrorKind::UpstreamRateLimited => "upstream_rate_limited",
         AdminErrorKind::BadGateway => "bad_gateway",
         AdminErrorKind::UpstreamResultUnknown => "upstream_result_unknown",
+        AdminErrorKind::UpstreamUnavailable => "upstream_unavailable",
         AdminErrorKind::Unavailable => "unavailable",
         AdminErrorKind::Internal => "internal",
     }
@@ -486,4 +491,10 @@ const fn admin_error_kind(kind: AdminErrorKind) -> &'static str {
 
 fn store_error(error: AdminStoreError) -> WorkerTaskError {
     WorkerTaskError::safe(error.to_string())
+}
+
+fn is_within_interval(observed_at: DateTime<Utc>, interval: Duration) -> bool {
+    let elapsed = Utc::now().signed_duration_since(observed_at);
+    elapsed < chrono::Duration::zero()
+        || chrono::Duration::from_std(interval).is_ok_and(|limit| elapsed < limit)
 }

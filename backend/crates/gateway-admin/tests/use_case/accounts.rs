@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
@@ -118,6 +119,15 @@ impl FakeProviderAdmin {
                 .with_message("upstream body containing a secret token")
                 .with_public_message(message),
         );
+    }
+
+    pub(super) fn fail_next_with_retry_after(
+        &self,
+        kind: ProviderAdminErrorKind,
+        retry_after: Duration,
+    ) {
+        *self.failure.lock().expect("provider failure") =
+            Some(ProviderAdminError::new(kind).with_retry_after(Some(retry_after)));
     }
 
     pub(super) fn fail_next_quota(&self, kind: ProviderAdminErrorKind) {

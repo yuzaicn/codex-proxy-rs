@@ -34,11 +34,19 @@ jobs:
         id: cargo-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/container-cargo
-          key: container-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml', 'deploy/Dockerfile') }}-${{ inputs.ref }}
+          # Registry and git sources are content-addressed and safe to share
+          # across revisions. The build target is intentionally not persisted:
+          # Cargo fingerprints can be invalidated by Docker COPY mtime
+          # normalization, which previously allowed stale rmeta files to cross
+          # source generations.
+          path: |
+            ${{ runner.temp }}/container-cargo/registry
+            ${{ runner.temp }}/container-cargo/git
+          # v2 intentionally drops the old archive that also contained target/.
+          key: container-cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml', 'deploy/Dockerfile') }}-${{ inputs.ref }}
           restore-keys: |
-            container-cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml', 'deploy/Dockerfile') }}-
-            container-cargo-v1-${{ runner.os }}-${{ runner.arch }}-
+            container-cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml', 'deploy/Dockerfile') }}-
+            container-cargo-v2-${{ runner.os }}-${{ runner.arch }}-
 
       # The GHA layer exporter does not persist RUN --mount=type=cache contents.
       # Extraction runs before actions/cache saves its directories in post steps.
@@ -50,8 +58,7 @@ jobs:
           cache-map: |
             {
               "${{ runner.temp }}/container-cargo/registry": "/usr/local/cargo/registry",
-              "${{ runner.temp }}/container-cargo/git": "/usr/local/cargo/git",
-              "${{ runner.temp }}/container-cargo/target": "/app/backend/target"
+              "${{ runner.temp }}/container-cargo/git": "/usr/local/cargo/git"
             }
           skip-extraction: ${{ steps.cargo-cache.outputs.cache-hit }}
 

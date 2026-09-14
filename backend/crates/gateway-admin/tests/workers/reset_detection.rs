@@ -39,6 +39,7 @@ use crate::use_case::accounts::{EventLog, FakeAccountStore, account_record};
 struct ResetStoreFixture {
     settings: ResetDetectionSettings,
     observations: Arc<Mutex<Vec<(String, u64)>>>,
+    latest_observed_at: Arc<Mutex<Option<chrono::DateTime<Utc>>>>,
     pending: Arc<Mutex<BTreeMap<String, Uuid>>>,
     completions: Arc<Mutex<Vec<CompleteResetCreditConsume>>>,
 }
@@ -59,9 +60,24 @@ impl ResetStoreFixture {
                 config_revision: gateway_admin::model::Revision::new(1).expect("revision"),
             },
             observations: Arc::new(Mutex::new(Vec::new())),
+            latest_observed_at: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(BTreeMap::new())),
             completions: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    fn clear_latest_observed_at(&self) {
+        *self
+            .latest_observed_at
+            .lock()
+            .expect("latest reset detection timestamp") = None;
+    }
+
+    fn set_latest_observed_at(&self, observed_at: chrono::DateTime<Utc>) {
+        *self
+            .latest_observed_at
+            .lock()
+            .expect("latest reset detection timestamp") = Some(observed_at);
     }
 }
 
@@ -69,6 +85,15 @@ impl ResetStoreFixture {
 impl ResetDetectionStore for ResetStoreFixture {
     async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings> {
         Ok(self.settings.clone())
+    }
+
+    async fn latest_reset_detection_observed_at(
+        &self,
+    ) -> AdminStoreResult<Option<chrono::DateTime<Utc>>> {
+        Ok(*self
+            .latest_observed_at
+            .lock()
+            .expect("latest reset detection timestamp"))
     }
 
     async fn replace_reset_detection_settings(
@@ -83,12 +108,16 @@ impl ResetDetectionStore for ResetStoreFixture {
         &self,
         account_id: &ProviderAccountId,
         available_count: u64,
-        _: chrono::DateTime<Utc>,
+        observed_at: chrono::DateTime<Utc>,
     ) -> AdminStoreResult<()> {
         self.observations
             .lock()
             .expect("observations")
             .push((account_id.as_str().to_owned(), available_count));
+        *self
+            .latest_observed_at
+            .lock()
+            .expect("latest reset detection timestamp") = Some(observed_at);
         Ok(())
     }
 
@@ -289,6 +318,7 @@ async fn ambiguous_result_reuses_redeem_request_id_after_restart() {
         operations.clone(),
     )
     .await;
+    store.clear_latest_observed_at();
     run_task(store.clone(), accounts, runtime, operations.clone()).await;
 
     let consumes = operations.consumes.lock().expect("consumes");
@@ -412,6 +442,26 @@ async fn disabled_worker_cycle_does_not_read_accounts_or_upstream() {
     assert!(event_log.lock().expect("events").is_empty());
     assert_eq!(*operations.reset_reads.lock().expect("reset reads"), 0);
     assert!(operations.consumes.lock().expect("consumes").is_empty());
+}
+
+#[tokio::test]
+async fn recent_database_observation_does_not_start_a_new_round() {
+    let store = ResetStoreFixture::new(true, true, ResetDetectionAccountScope::AllNonError);
+    store.set_latest_observed_at(Utc::now() - TimeDelta::seconds(1));
+    let event_log: EventLog = Arc::new(Mutex::new(Vec::new()));
+    let accounts = FakeAccountStore::new("openai", event_log.clone());
+    let operations = OperationsFixture::new(1, Vec::new(), AccountStatus::Normal);
+
+    run_task(
+        store,
+        accounts,
+        runtime(AccountRuntimeSnapshot::default()),
+        operations.clone(),
+    )
+    .await;
+
+    assert!(event_log.lock().expect("events").is_empty());
+    assert_eq!(*operations.reset_reads.lock().expect("reset reads"), 0);
 }
 
 fn store_error() -> AdminStoreError {

@@ -2612,6 +2612,7 @@ dependencies = [
  "gateway-protocol",
  "getrandom 0.4.3",
  "hex",
+ "httpdate",
  "hyper",
  "hyper-rustls",
  "hyper-util",

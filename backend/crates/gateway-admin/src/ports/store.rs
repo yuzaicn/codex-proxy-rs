@@ -383,6 +383,9 @@ pub trait DetectionStore: Send + Sync {
     /// 读取最近的检测批次聚合，按检测时间倒排。
     async fn list_detection_rounds(&self, limit: u32) -> AdminStoreResult<Vec<DetectionRound>>;
 
+    /// 读取最近一条检测记录的落库时间；没有成功落库的轮次时返回 `None`。
+    async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>>;
+
     /// 检测 Worker 按账号范围读取待探测账号及其调度暂停事实。
     async fn list_detection_targets(
         &self,
@@ -424,6 +427,10 @@ pub trait SettingsStore: Send + Sync {
 #[async_trait]
 pub trait ResetDetectionStore: Send + Sync {
     async fn load_reset_detection_settings(&self) -> AdminStoreResult<ResetDetectionSettings>;
+
+    /// 读取最近一条重置卡观测时间，用于跨实例/重启后的轮次间隔判断。
+    async fn latest_reset_detection_observed_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>>;
+
     async fn replace_reset_detection_settings(
         &self,
         command: ReplaceResetDetectionSettings,
@@ -460,6 +467,14 @@ impl ResetDetectionStore for UnavailableResetDetectionStore {
         Err(AdminStoreError::new(
             AdminStoreErrorKind::Unavailable,
             "reset detection settings",
+            "store is unavailable",
+        ))
+    }
+
+    async fn latest_reset_detection_observed_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "latest reset detection timestamp",
             "store is unavailable",
         ))
     }

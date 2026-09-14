@@ -32,7 +32,7 @@ use gateway_core::engine::{
     NewModelRequest, RecoveryReport,
 };
 use gateway_core::error::StoreError;
-use gateway_core::health::{WorkerHealthSnapshot, WorkerHealthSource};
+use gateway_core::health::{HealthProbe, WorkerHealthSnapshot, WorkerHealthSource};
 use gateway_core::lifecycle::{ConnectionDraining, ConnectionGuard, ConnectionLifecycle};
 use gateway_core::policy::{
     ClientApiKeyId, ClientPolicy, CodexClientMinVersions, CodexClientVersion,
@@ -56,6 +56,19 @@ pub(super) async fn api_router_with_worker_health(
     api_router_with_origins_and_worker_health(execution, Vec::new(), worker_health).await
 }
 
+pub(super) async fn api_router_with_probes(
+    execution: Arc<dyn ExecutionService>,
+    probes: Vec<Arc<dyn HealthProbe>>,
+) -> axum::Router {
+    api_router_with_origins_worker_health_and_probes(
+        execution,
+        Vec::new(),
+        Arc::new(EmptyWorkerHealth),
+        probes,
+    )
+    .await
+}
+
 pub(super) async fn api_router_with_origins(
     execution: Arc<dyn ExecutionService>,
     cors_allowed_origins: Vec<String>,
@@ -73,6 +86,21 @@ async fn api_router_with_origins_and_worker_health(
     cors_allowed_origins: Vec<String>,
     worker_health: Arc<dyn WorkerHealthSource>,
 ) -> axum::Router {
+    api_router_with_origins_worker_health_and_probes(
+        execution,
+        cors_allowed_origins,
+        worker_health,
+        Vec::new(),
+    )
+    .await
+}
+
+async fn api_router_with_origins_worker_health_and_probes(
+    execution: Arc<dyn ExecutionService>,
+    cors_allowed_origins: Vec<String>,
+    worker_health: Arc<dyn WorkerHealthSource>,
+    probes: Vec<Arc<dyn HealthProbe>>,
+) -> axum::Router {
     let admin = crate::admin::AdminTestFixture::new().await;
     gateway_api::initialize(
         gateway_api::ApiConfig {
@@ -83,7 +111,7 @@ async fn api_router_with_origins_and_worker_health(
         },
         execution,
         admin.services,
-        Vec::new(),
+        probes,
         worker_health,
         Arc::new(TestLifecycle::default()),
     )

@@ -1,10 +1,10 @@
 //! 管理端公共 wire、响应信封与脱敏错误。
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,8 @@ impl AdminErrorCode {
     pub const CONFLICT: Self = Self(40901);
     /// 管理员登录尝试过多。
     pub const TOO_MANY_LOGIN_ATTEMPTS: Self = Self(42901);
+    /// 上游服务限流。
+    pub const UPSTREAM_RATE_LIMITED: Self = Self(42902);
     /// 设置持久化失败。
     pub const SETTINGS_PERSIST: Self = Self(50000);
     /// 未分类内部错误。
@@ -134,7 +136,14 @@ impl AdminErrorCode {
 pub struct AdminErrorBody {
     code: AdminErrorCode,
     message: String,
-    data: (),
+    data: Option<AdminErrorData>,
+}
+
+/// 管理端错误的可选结构化重试信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminErrorData {
+    retry_after_seconds: u64,
 }
 
 impl AdminErrorBody {
@@ -144,7 +153,7 @@ impl AdminErrorBody {
         Self {
             code,
             message: message.into(),
-            data: (),
+            data: None,
         }
     }
 
@@ -165,6 +174,7 @@ impl AdminErrorBody {
 pub struct AdminError {
     status: StatusCode,
     body: AdminErrorBody,
+    retry_after: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -229,6 +239,11 @@ const TOO_MANY_LOGIN_ATTEMPTS: AdminErrorSpec = AdminErrorSpec::new(
     AdminErrorCode::TOO_MANY_LOGIN_ATTEMPTS,
     "登录尝试过多，请稍后重试",
 );
+const UPSTREAM_RATE_LIMITED: AdminErrorSpec = AdminErrorSpec::new(
+    StatusCode::TOO_MANY_REQUESTS,
+    AdminErrorCode::UPSTREAM_RATE_LIMITED,
+    "上游限流，请稍后重试",
+);
 const INTERNAL: AdminErrorSpec = AdminErrorSpec::new(
     StatusCode::INTERNAL_SERVER_ERROR,
     AdminErrorCode::INTERNAL,
@@ -249,12 +264,18 @@ const SERVICE_UNAVAILABLE: AdminErrorSpec = AdminErrorSpec::new(
     AdminErrorCode::SERVICE_UNAVAILABLE,
     "依赖服务暂不可用",
 );
+const UPSTREAM_SERVICE_UNAVAILABLE: AdminErrorSpec = AdminErrorSpec::new(
+    StatusCode::SERVICE_UNAVAILABLE,
+    AdminErrorCode::SERVICE_UNAVAILABLE,
+    "上游服务暂不可用，请稍后重试",
+);
 
 impl AdminError {
     fn new(status: StatusCode, code: AdminErrorCode, message: impl Into<String>) -> Self {
         Self {
             status,
             body: AdminErrorBody::new(code, message),
+            retry_after: None,
         }
     }
 
@@ -302,6 +323,17 @@ impl AdminError {
         Self::from_spec(TOO_MANY_LOGIN_ATTEMPTS)
     }
 
+    pub fn upstream_rate_limited(retry_after: Option<Duration>) -> Self {
+        let mut error = Self::from_spec(UPSTREAM_RATE_LIMITED);
+        if let Some(retry_after) = retry_after {
+            error.body.data = Some(AdminErrorData {
+                retry_after_seconds: retry_after.as_secs(),
+            });
+            error.retry_after = Some(retry_after);
+        }
+        error
+    }
+
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, AdminErrorCode::CONFLICT, message)
     }
@@ -325,6 +357,10 @@ impl AdminError {
     pub fn service_unavailable() -> Self {
         Self::from_spec(SERVICE_UNAVAILABLE)
     }
+
+    pub fn upstream_service_unavailable() -> Self {
+        Self::from_spec(UPSTREAM_SERVICE_UNAVAILABLE)
+    }
 }
 
 /// 把管理用例的稳定错误分类映射到既有 HTTP 错误 contract。
@@ -337,8 +373,12 @@ pub(crate) fn map_admin_service_error(error: gateway_admin::model::AdminError) -
         AdminErrorKind::NotFound => AdminError::not_found(error.message()),
         AdminErrorKind::Conflict => AdminError::conflict(error.message()),
         AdminErrorKind::RateLimited => AdminError::too_many_login_attempts(),
+        AdminErrorKind::UpstreamRateLimited => {
+            AdminError::upstream_rate_limited(error.retry_after())
+        }
         AdminErrorKind::BadGateway => AdminError::bad_gateway(),
         AdminErrorKind::UpstreamResultUnknown => AdminError::upstream_result_unknown(),
+        AdminErrorKind::UpstreamUnavailable => AdminError::upstream_service_unavailable(),
         AdminErrorKind::Unavailable => AdminError::service_unavailable(),
         AdminErrorKind::Internal => AdminError::internal(),
     };
@@ -358,7 +398,14 @@ pub(crate) fn map_admin_service_error(error: gateway_admin::model::AdminError) -
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body)).into_response()
+        let retry_after = self.retry_after;
+        let mut response = (self.status, Json(self.body)).into_response();
+        if let Some(retry_after) = retry_after
+            && let Ok(value) = HeaderValue::from_str(&retry_after.as_secs().to_string())
+        {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
+        response
     }
 }
 

@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use gateway_core::account::{
@@ -353,6 +353,10 @@ pub enum CodexCredentialAdminError {
         code: Option<String>,
         message: Option<String>,
     },
+    #[error("Codex refresh endpoint is rate limited")]
+    RefreshRateLimited { retry_after: Option<Duration> },
+    #[error("Codex refresh endpoint is unavailable")]
+    RefreshUpstreamUnavailable,
     #[error("Codex refresh send state is ambiguous")]
     RefreshAmbiguous { message: Option<String> },
 }
@@ -371,7 +375,9 @@ impl CodexCredentialAdminError {
             | Self::NotFound
             | Self::MissingRefreshToken
             | Self::RefreshLeaseUnavailable
-            | Self::RefreshUnavailable => None,
+            | Self::RefreshUnavailable
+            | Self::RefreshRateLimited { .. }
+            | Self::RefreshUpstreamUnavailable => None,
         }
     }
 }
@@ -1044,8 +1050,16 @@ fn map_refresh_failure(error: RefreshFailure) -> CodexCredentialAdminError {
             CodexCredentialAdminError::AccountBanned { message }
         }
         RefreshFailure::RetryableTransport { .. } => CodexCredentialAdminError::RefreshUnavailable,
+        RefreshFailure::UpstreamRateLimited { retry_after, .. } => {
+            CodexCredentialAdminError::RefreshRateLimited { retry_after }
+        }
+        RefreshFailure::UpstreamUnavailable { .. } => {
+            CodexCredentialAdminError::RefreshUpstreamUnavailable
+        }
         // Worker 的 Transport 分类还承担 401 退避；管理提示只按已收到的响应事实细分，
         // 不改变后台刷新策略，也不把明确失败响应误报为租约冲突或执行结果未知。
+        // 429/5xx 已在上面按 GUCH-191 细分，这里只剩「收到过响应的其余状态」与「无响应、
+        // 结果未知」两类：前者归因上游，后者保持 Ambiguous，提醒调用方不要假设未生效。
         RefreshFailure::Transport { message, upstream } => match upstream {
             Some(upstream) => CodexCredentialAdminError::RefreshUpstream {
                 status: upstream.status(),

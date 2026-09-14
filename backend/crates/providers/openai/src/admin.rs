@@ -1368,6 +1368,10 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
     use CodexCredentialAdminError as Error;
     use ProviderAdminErrorKind as Kind;
     let upstream_message = error.upstream_message().map(ToOwned::to_owned);
+    let retry_after = match &error {
+        Error::RefreshRateLimited { retry_after } => *retry_after,
+        _ => None,
+    };
     let (kind, public_message) = match error {
         Error::PersonalAccessToken(error) => match error {
             PersonalAccessTokenError::InvalidToken => (
@@ -1402,6 +1406,12 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
         Error::RefreshLeaseUnavailable => {
             (Kind::Conflict, "令牌刷新繁忙，请等待当前刷新完成后重试")
         }
+        // GUCH-191：429/5xx 从笼统的上游失败里拆出，保留 retry_after 与专属提示；
+        // 其余「收到过响应」的状态仍按 v3.4.1 归因上游（BadGateway），无响应走 Ambiguous。
+        Error::RefreshRateLimited { .. } => (Kind::RateLimited, "上游限流，请稍后重试"),
+        Error::RefreshUpstreamUnavailable => {
+            (Kind::UpstreamUnavailable, "上游服务暂不可用，请稍后重试")
+        }
         Error::RefreshUnavailable => (
             Kind::Unavailable,
             "令牌刷新服务暂不可用，请检查出站连接与依赖服务",
@@ -1420,7 +1430,9 @@ fn map_credential_admin_error(error: CodexCredentialAdminError) -> ProviderAdmin
             "令牌刷新结果未知，请先核对账号状态，不要立即重复刷新",
         ),
     };
-    let error = provider_admin_error(kind).with_public_message(public_message);
+    let error = provider_admin_error(kind)
+        .with_retry_after(retry_after)
+        .with_public_message(public_message);
     match upstream_message {
         Some(message) => error.with_message(message),
         None => error,
@@ -1454,6 +1466,8 @@ const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'sta
         CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
         CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
         CodexCredentialAdminError::RefreshUpstream { .. } => "refresh_upstream_failed",
+        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
+        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
         CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
     }
 }
@@ -1465,6 +1479,8 @@ const fn provider_admin_error_code(kind: ProviderAdminErrorKind) -> &'static str
         ProviderAdminErrorKind::NotFound => "not_found",
         ProviderAdminErrorKind::Conflict => "conflict",
         ProviderAdminErrorKind::Ambiguous => "ambiguous",
+        ProviderAdminErrorKind::RateLimited => "rate_limited",
+        ProviderAdminErrorKind::UpstreamUnavailable => "upstream_unavailable",
         ProviderAdminErrorKind::Unavailable => "unavailable",
         ProviderAdminErrorKind::CredentialRefreshRequired => "credential_refresh_required",
         ProviderAdminErrorKind::BadGateway => "bad_gateway",

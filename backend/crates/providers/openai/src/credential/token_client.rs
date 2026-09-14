@@ -8,13 +8,14 @@ use crate::transport::{
     tls::{build_reqwest_client_with_custom_ca, ensure_rustls_provider},
 };
 use async_trait::async_trait;
-use reqwest::{Client, StatusCode, redirect::Policy};
+use reqwest::{Client, StatusCode, header::RETRY_AFTER, redirect::Policy};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_REFRESH_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -95,6 +96,17 @@ pub enum RefreshFailure {
     },
     #[error("refresh transport failed before server processing")]
     RetryableTransport { message: String },
+    #[error("refresh endpoint is rate limited")]
+    UpstreamRateLimited {
+        message: Option<String>,
+        upstream: Option<Box<RefreshUpstreamFailure>>,
+        retry_after: Option<Duration>,
+    },
+    #[error("refresh endpoint is unavailable")]
+    UpstreamUnavailable {
+        message: Option<String>,
+        upstream: Option<Box<RefreshUpstreamFailure>>,
+    },
     #[error("refresh transport failed after possible server processing")]
     Transport {
         message: Option<String>,
@@ -119,6 +131,8 @@ impl RefreshFailure {
         match self {
             Self::InvalidGrant { message, .. }
             | Self::Banned { message, .. }
+            | Self::UpstreamRateLimited { message, .. }
+            | Self::UpstreamUnavailable { message, .. }
             | Self::Transport { message, .. } => message.as_deref(),
             Self::RetryableTransport { message } => Some(message),
         }
@@ -129,6 +143,8 @@ impl RefreshFailure {
         match self {
             Self::InvalidGrant { upstream, .. }
             | Self::Banned { upstream, .. }
+            | Self::UpstreamRateLimited { upstream, .. }
+            | Self::UpstreamUnavailable { upstream, .. }
             | Self::Transport { upstream, .. } => upstream.as_deref(),
             Self::RetryableTransport { .. } => None,
         }
@@ -140,7 +156,23 @@ impl RefreshFailure {
             Self::InvalidGrant { .. } => "invalid-grant",
             Self::Banned { .. } => "account-banned",
             Self::RetryableTransport { .. } => "transport-not-sent",
+            Self::UpstreamRateLimited { .. } => "upstream-rate-limited",
+            Self::UpstreamUnavailable { .. } => "upstream-unavailable",
             Self::Transport { .. } => "transport-ambiguous",
+        }
+    }
+
+    /// 是否应由后台刷新策略执行有界重试。
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        !matches!(self, Self::InvalidGrant { .. } | Self::Banned { .. })
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::UpstreamRateLimited { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }
@@ -526,9 +558,10 @@ impl TokenRefresher for OpenAiTokenClient {
             .send()
             .await
             .map_err(|error| refresh_transport_failure(&error))?;
+        let retry_after = refresh_retry_after(response.headers());
         let (status, body) = read_bounded_response(response).await?;
         if !status.is_success() {
-            return Err(classify_refresh_failure(status, &body));
+            return Err(classify_refresh_failure(status, &body, retry_after));
         }
         parse_token_pair(&body).map_err(|()| RefreshFailure::Transport {
             message: Some("OpenAI OAuth refresh returned an invalid success response".to_owned()),
@@ -642,7 +675,11 @@ fn parse_token_pair(body: &[u8]) -> Result<TokenPair, ()> {
     })
 }
 
-fn classify_refresh_failure(status: StatusCode, body: &[u8]) -> RefreshFailure {
+fn classify_refresh_failure(
+    status: StatusCode,
+    body: &[u8],
+    retry_after: Option<Duration>,
+) -> RefreshFailure {
     // 官方刷新错误的消息与错误码分别位于 `error.message`、`error.code`；
     // `error` 字符串与顶层 `code` 仅用于兼容官方客户端自身的错误码提取契约。
     let error = serde_json::from_slice::<RefreshErrorResponse>(body).ok();
@@ -686,10 +723,42 @@ fn classify_refresh_failure(status: StatusCode, body: &[u8]) -> RefreshFailure {
             upstream: upstream(),
         };
     }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return RefreshFailure::UpstreamRateLimited {
+            message,
+            upstream: upstream(),
+            retry_after,
+        };
+    }
+    if status.is_server_error() {
+        return RefreshFailure::UpstreamUnavailable {
+            message,
+            upstream: upstream(),
+        };
+    }
     RefreshFailure::Transport {
         message,
         upstream: upstream(),
     }
+}
+
+fn refresh_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_refresh_retry_after)
+        .map(|retry_after| retry_after.min(MAX_REFRESH_RETRY_AFTER))
+}
+
+fn parse_refresh_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let target = httpdate::parse_http_date(value).ok()?;
+    let remaining = target.duration_since(SystemTime::now()).unwrap_or_default();
+    let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+    Some(Duration::from_secs(seconds))
 }
 
 fn refresh_transport_failure(error: &reqwest::Error) -> RefreshFailure {

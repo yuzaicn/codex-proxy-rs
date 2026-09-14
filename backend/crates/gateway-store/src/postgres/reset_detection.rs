@@ -88,6 +88,20 @@ impl ResetDetectionStore for PgResetDetectionStore {
         decode(row, rev).map_err(|error| admin_store_error(ENTITY, error))
     }
 
+    async fn latest_reset_detection_observed_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>> {
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "select max(reset_credits_observed_at) from provider_accounts",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| {
+            admin_store_error(
+                "reset credits observation",
+                postgres_unavailable("load latest reset credits observation"),
+            )
+        })
+    }
+
     async fn replace_reset_detection_settings(
         &self,
         command: ReplaceResetDetectionSettings,

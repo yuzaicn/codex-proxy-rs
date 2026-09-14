@@ -1,6 +1,6 @@
 //! Provider 管理能力与动态注册表。
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use gateway_core::{
@@ -31,6 +31,8 @@ pub enum ProviderAdminErrorKind {
     Conflict,
     /// Provider 已发起不可逆操作，但无法确认最终执行结果。
     Ambiguous,
+    RateLimited,
+    UpstreamUnavailable,
     Unavailable,
     CredentialRefreshRequired,
     BadGateway,
@@ -48,6 +50,7 @@ pub struct ProviderAdminError {
     kind: ProviderAdminErrorKind,
     message: Option<String>,
     public_message: Option<&'static str>,
+    retry_after: Option<Duration>,
 }
 
 impl std::fmt::Debug for ProviderAdminError {
@@ -57,6 +60,7 @@ impl std::fmt::Debug for ProviderAdminError {
             .field("kind", &self.kind)
             .field("message", &self.message.as_ref().map(|_| "<redacted>"))
             .field("public_message", &self.public_message)
+            .field("retry_after", &self.retry_after)
             .finish()
     }
 }
@@ -68,6 +72,7 @@ impl ProviderAdminError {
             kind,
             message: None,
             public_message: None,
+            retry_after: None,
         }
     }
 
@@ -87,6 +92,17 @@ impl ProviderAdminError {
     #[must_use]
     pub const fn public_message(&self) -> Option<&'static str> {
         self.public_message
+    }
+
+    #[must_use]
+    pub const fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 
     #[must_use]
