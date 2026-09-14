@@ -200,6 +200,7 @@ pub struct DetectionRoundView {
     pub checked_at: DateTime<Utc>,
     pub degraded_count: u64,
     pub normal_count: u64,
+    pub recovered_count: Option<u64>,
 }
 
 impl From<DetectionRound> for DetectionRoundView {
@@ -209,6 +210,7 @@ impl From<DetectionRound> for DetectionRoundView {
             checked_at: round.checked_at,
             degraded_count: round.degraded_count,
             normal_count: round.normal_count,
+            recovered_count: round.recovered_count,
         }
     }
 }
