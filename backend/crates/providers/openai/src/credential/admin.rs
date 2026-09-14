@@ -402,6 +402,12 @@ pub(crate) fn import_failure(
         Error::RefreshUnavailable => (true, "暂时无法连接上游，请稍后重试"),
         Error::RefreshRateLimited { .. } => (true, "上游限流，请稍后重试"),
         Error::RefreshUpstreamUnavailable => (true, "上游服务暂不可用，请稍后重试"),
+        // GUCH-191：429/5xx 属可恢复的上游状态；401/403 是授权层面的拒绝，
+        // 原样重试不会有不同结果，与 RefreshRejected 同判为不可重试。
+        Error::RefreshUpstream { status, .. } => match status {
+            429 | 500..=599 => (true, "上游服务异常，请稍后重试"),
+            _ => (false, "上游拒绝了令牌刷新，请检查账号授权状态"),
+        },
         Error::RefreshAmbiguous { .. } => (true, "上游执行结果未知，请刷新状态后再决定是否重试"),
         Error::RefreshLeaseUnavailable => (true, "刷新资源暂时不可用，请稍后重试"),
         Error::InvalidCredential => (false, "凭据格式无效，请检查后重试"),
@@ -445,6 +451,7 @@ pub(crate) const fn credential_admin_error_code(error: &CodexCredentialAdminErro
         CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
         CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
         CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
+        CodexCredentialAdminError::RefreshUpstream { .. } => "refresh_upstream_failed",
         CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
         CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
         CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",

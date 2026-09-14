@@ -1458,26 +1458,6 @@ fn refresh_rejection_message(code: Option<&str>) -> Option<&'static str> {
     }
 }
 
-const fn credential_admin_error_code(error: &CodexCredentialAdminError) -> &'static str {
-    match error {
-        CodexCredentialAdminError::PersonalAccessToken(_) => {
-            "personal_access_token_validation_failed"
-        }
-        CodexCredentialAdminError::InvalidInput => "invalid_input",
-        CodexCredentialAdminError::InvalidCredential => "invalid_credential",
-        CodexCredentialAdminError::NotFound => "not_found",
-        CodexCredentialAdminError::MissingRefreshToken => "missing_refresh_token",
-        CodexCredentialAdminError::RefreshLeaseUnavailable => "refresh_lease_unavailable",
-        CodexCredentialAdminError::RefreshRejected { .. } => "refresh_rejected",
-        CodexCredentialAdminError::AccountBanned { .. } => "account_banned",
-        CodexCredentialAdminError::RefreshUnavailable => "refresh_unavailable",
-        CodexCredentialAdminError::RefreshUpstream { .. } => "refresh_upstream_failed",
-        CodexCredentialAdminError::RefreshRateLimited { .. } => "refresh_rate_limited",
-        CodexCredentialAdminError::RefreshUpstreamUnavailable => "refresh_upstream_unavailable",
-        CodexCredentialAdminError::RefreshAmbiguous { .. } => "refresh_ambiguous",
-    }
-}
-
 const fn provider_admin_error_code(kind: ProviderAdminErrorKind) -> &'static str {
     match kind {
         ProviderAdminErrorKind::Invalid => "invalid",
