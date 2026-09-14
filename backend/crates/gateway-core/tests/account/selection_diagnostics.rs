@@ -45,7 +45,9 @@ fn selection_trace_should_bound_candidates_and_preserve_the_selected_account() {
     let mut candidates = (0..30)
         .map(|index| candidate(&format!("acct_{index}"), 0, None))
         .collect::<Vec<_>>();
-    candidates.push(candidate("acct_best", 0, Some(10_000)));
+    let mut best = candidate("acct_best", 0, Some(10_000));
+    best.signals.failure_rate_basis_points = Some(0);
+    candidates.push(best);
     let trace = TraceContext::new("req_many_candidates");
     // 选号位于首部保留区之外，也应在长流的常规事件淘汰后保留。
     for _ in 0..10 {

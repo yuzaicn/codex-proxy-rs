@@ -179,11 +179,14 @@ fn smart_selector_should_keep_rotation_order_when_nearby_scores_cross() {
 
 #[test]
 fn smart_selector_should_only_rotate_among_candidates_close_to_the_best() {
-    let candidates = [
+    let mut candidates = [
         candidate("acct_a", 0, Some(10_000)),
         candidate("acct_b", 0, Some(9_500)),
         candidate("acct_c", 0, Some(9_000)),
     ];
+    for candidate in &mut candidates {
+        candidate.signals.failure_rate_basis_points = Some(0);
+    }
 
     assert_eq!(
         smart_selection_ids(&candidates),
@@ -236,4 +239,71 @@ fn smart_selector_should_treat_unknown_quota_as_neutral() {
     ];
 
     assert_eq!(smart_selection_ids(&candidates), ["acct_unknown"; 20]);
+}
+
+#[test]
+fn smart_selector_should_treat_unknown_latency_as_neutral() {
+    let mut unknown = candidate("acct_unknown", 0, Some(5_000));
+    unknown.signals.failure_rate_basis_points = Some(0);
+    let mut proven_fast = candidate("acct_proven_fast", 0, Some(5_000));
+    proven_fast.signals.failure_rate_basis_points = Some(0);
+    proven_fast.signals.first_output_latency_ms = Some(100);
+
+    assert_eq!(
+        smart_selection_ids(&[unknown, proven_fast]),
+        ["acct_proven_fast"; 20]
+    );
+}
+
+#[test]
+fn smart_selector_should_cap_zero_feedback_quota_until_any_feedback_arrives() {
+    let fresh = candidate("acct_fresh", 0, Some(10_000));
+    let mut observed = candidate("acct_observed", 0, Some(5_000));
+    observed.signals.failure_rate_basis_points = Some(0);
+
+    assert_eq!(
+        smart_selection_ids(&[fresh.clone(), observed]),
+        ["acct_fresh", "acct_observed"].repeat(10)
+    );
+
+    for signal in ["failure", "latency"] {
+        let mut warmed = fresh.clone();
+        match signal {
+            "failure" => warmed.signals.failure_rate_basis_points = Some(0),
+            "latency" => warmed.signals.first_output_latency_ms = Some(10_000),
+            _ => unreachable!(),
+        }
+        let cold = candidate("acct_cold", 0, Some(5_000));
+        assert_eq!(smart_selection_ids(&[warmed, cold]), ["acct_fresh"; 20]);
+    }
+}
+
+#[test]
+fn smart_selector_should_demote_an_account_after_repeated_terminal_failures() {
+    let feedback = AccountFeedbackStats::default();
+    let provider = ProviderKind::new("openai").expect("provider");
+    let rejected_id = ProviderAccountId::new("acct_rejected").expect("account");
+    for _ in 0..3 {
+        feedback.report(
+            &provider,
+            &rejected_id,
+            AccountAttemptFeedback::Failed {
+                first_output_ms: None,
+            },
+        );
+    }
+    let (failure_rate, latency) = feedback.scheduling_signals(&provider, &rejected_id);
+    assert!(failure_rate.is_some_and(|rate| rate > 0));
+
+    let mut rejected = candidate("acct_rejected", 0, Some(10_000));
+    rejected.signals.failure_rate_basis_points = failure_rate;
+    rejected.signals.first_output_latency_ms = latency;
+    let mut healthy = candidate("acct_healthy", 0, Some(5_000));
+    healthy.signals.failure_rate_basis_points = Some(0);
+    healthy.signals.first_output_latency_ms = Some(100);
+
+    assert_eq!(
+        smart_selection_ids(&[rejected, healthy]),
+        ["acct_healthy"; 20]
+    );
 }

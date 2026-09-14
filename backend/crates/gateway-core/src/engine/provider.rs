@@ -244,9 +244,10 @@ impl ProviderStreamAccountFeedback {
 
     fn report_failure(&mut self, error: &ProviderError) {
         if self.reported
-            // `Ambiguous` 仍须关闭重放边界，但不能证明失败由账号造成；将它计入
-            // 账号评分会把传输不确定性错误归因给账号。
-            || error.send_state() != UpstreamSendState::Sent
+            // 重放归因与调度反馈是两个信号：`Ambiguous` 仍关闭重放边界，但一次
+            // 打不通的终态 attempt 必须能压低账号评分；这里仅更新进程内 EWMA。
+            // `NotSent` 没有触达上游账号，继续排除。
+            || error.send_state() == UpstreamSendState::NotSent
             || matches!(
                 error.kind(),
                 ProviderErrorKind::Cancelled | ProviderErrorKind::ProcessTerminated

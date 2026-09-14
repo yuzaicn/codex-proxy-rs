@@ -17,7 +17,7 @@ use gateway_core::provider_ports::{
     ProviderStoreError,
 };
 use gateway_core::routing::{
-    ClientRoutingScope, FrozenAccountScope, RuntimeAccount, RuntimeAccountDirectory,
+    ClientRoutingScope, FrozenAccountScope, ProviderKind, RuntimeAccount, RuntimeAccountDirectory,
     UpstreamModelId,
 };
 use provider_xai::{
@@ -951,6 +951,15 @@ async fn smart_strategy_uses_common_account_health_feedback() {
 async fn smart_strategy_never_reuses_quota_projection_after_credential_rotation() {
     let fixture = SelectorFixture::new(&["aaa-stale-high", "zzz-current-known"]).await;
     let stale = account_id("aaa-stale-high");
+    for account in [&stale, &account_id("zzz-current-known")] {
+        fixture.feedback.report(
+            &ProviderKind::new("xai").expect("provider"),
+            account,
+            AccountAttemptFeedback::Succeeded {
+                first_output_ms: Some(100),
+            },
+        );
+    }
     fixture
         .seed_quota(&stale, 5.0, Duration::from_secs(600))
         .await;

@@ -18,6 +18,10 @@ fn sent_error(kind: ProviderErrorKind, code: Option<&str>) -> ProviderError {
     }
 }
 
+fn transport_error(kind: ProviderErrorKind, send_state: UpstreamSendState) -> ProviderError {
+    ProviderError::new(kind, send_state)
+}
+
 fn deliver_error_with_openai_feedback(
     feedback: &Arc<AccountFeedbackStats>,
     provider: &ProviderKind,
@@ -118,11 +122,6 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
         ),
         sent_error(ProviderErrorKind::Unavailable, Some("service_unavailable")),
         sent_error(
-            ProviderErrorKind::Transport,
-            Some("upstream_transport_error"),
-        ),
-        sent_error(ProviderErrorKind::Timeout, Some("first_output_timeout")),
-        sent_error(
             ProviderErrorKind::Protocol,
             Some("upstream_stream_truncated"),
         ),
@@ -131,8 +130,6 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
             Some("upstream_empty_response"),
         ),
         sent_error(ProviderErrorKind::Unavailable, Some("new_unknown_reason")),
-        sent_error(ProviderErrorKind::Transport, Some("new_unknown_reason")),
-        sent_error(ProviderErrorKind::Transport, Some("")),
         ProviderError::new(ProviderErrorKind::Unavailable, UpstreamSendState::Sent)
             .with_status(503),
     ] {
@@ -145,18 +142,42 @@ fn account_score_failure_filter_should_reject_client_and_unknown_failures() {
 
 #[test]
 fn account_score_failure_filter_should_reject_internal_kinds_without_a_reason() {
-    for kind in [
-        ProviderErrorKind::Transport,
-        ProviderErrorKind::Timeout,
-        ProviderErrorKind::Protocol,
-    ] {
-        let error = sent_error(kind, None);
-        assert!(
-            !openai_failure_affects_account_score(&error),
-            "unlisted internal failure affected the score: {}",
-            kind.as_str()
-        );
+    let error = sent_error(ProviderErrorKind::Protocol, None);
+    assert!(!openai_failure_affects_account_score(&error));
+}
+
+#[test]
+fn account_score_failure_filter_should_score_transport_failures_after_upstream_contact() {
+    for kind in [ProviderErrorKind::Transport, ProviderErrorKind::Timeout] {
+        for send_state in [UpstreamSendState::Sent, UpstreamSendState::Ambiguous] {
+            assert!(openai_failure_affects_account_score(&transport_error(
+                kind, send_state
+            )));
+        }
+        assert!(!openai_failure_affects_account_score(&transport_error(
+            kind,
+            UpstreamSendState::NotSent,
+        )));
     }
+}
+
+#[test]
+fn openai_feedback_should_score_ambiguous_transport_failure() {
+    let feedback = Arc::new(AccountFeedbackStats::default());
+    let provider = ProviderKind::new("openai").expect("provider");
+    let account = ProviderAccountId::new("acct_ambiguous_transport").expect("account");
+
+    deliver_error_with_openai_feedback(
+        &feedback,
+        &provider,
+        &account,
+        transport_error(ProviderErrorKind::Transport, UpstreamSendState::Ambiguous),
+    );
+
+    assert_eq!(
+        feedback.scheduling_signals(&provider, &account).0,
+        Some(2_000)
+    );
 }
 
 #[test]
