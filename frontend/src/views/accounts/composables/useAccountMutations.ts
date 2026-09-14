@@ -29,6 +29,7 @@ export function useAccountMutations(options: {
   const { downloadJson } = useDownload()
   const onboarding = useAccountOnboarding({
     reload: loadAccounts,
+    accountById: accountId => options.accounts.value.find(account => account.id === accountId),
   })
   const selectedAccountsById = new Map<string, AccountRow>()
   const showDeleteModal = ref(false)

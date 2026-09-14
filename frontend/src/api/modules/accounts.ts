@@ -252,7 +252,7 @@ export interface AccountModelsResponse {
 export interface AccountImportResponse {
   importedCount: number
   accountIds: string[]
-  insertedCount?: number
+  createdCount?: number
   updatedCount?: number
   failures?: Array<{
     index: number
