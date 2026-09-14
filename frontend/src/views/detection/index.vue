@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import type { ResponsePreviewView } from './preview-view'
+import type { PreviewStatus } from './useHtmlPreview'
 import type { DetectionRecord, DetectionRound } from '@/api'
 import { ChevronDown, Eye, PauseCircle, PlayCircle, RefreshCw } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowReactive } from 'vue'
 
-import { getDetectionRecordHtmlUrl, getDetectionRecords, getDetectionRounds, setSchedulingSuspended } from '@/api'
+import { computed, onBeforeUnmount, onMounted, ref, shallowReactive, watch } from 'vue'
+import { getDetectionRecords, getDetectionRounds, setSchedulingSuspended } from '@/api'
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseCard from '@/components/base/BaseCard.vue'
 import BaseEmpty from '@/components/base/BaseEmpty.vue'
@@ -16,6 +18,8 @@ import { errorMessage } from '@/utils/async'
 import { formatDateTime } from '@/utils/date'
 import AccountIdentityCell from '@/views/accounts/components/AccountIdentityCell.vue'
 import { normalizeMatchedPhrases } from './presentation'
+import { responsePreviewView } from './preview-view'
+import { useHtmlPreview } from './useHtmlPreview'
 
 const rounds = ref<DetectionRound[]>([])
 const roundsLoading = ref(true)
@@ -27,21 +31,9 @@ const actionBusyKey = ref<string | null>(null)
 const detailModalVisible = ref(false)
 const currentRecord = ref<DetectionRecord | null>(null)
 
-type PreviewStatus = 'idle' | 'loading' | 'rendering' | 'ready' | 'missing' | 'error' | 'timeout'
-
-interface PreviewState {
-  status: PreviewStatus
-  srcdoc?: string
-  controller?: AbortController
-  renderTimeout?: number
-}
-
-const previewStates = reactive<Record<number, PreviewState>>({})
+const preview = useHtmlPreview()
 const previewElements = new Map<number, HTMLElement>()
 let previewObserver: IntersectionObserver | null = null
-
-const PREVIEW_FETCH_TIMEOUT_MS = 8_000
-const PREVIEW_RENDER_TIMEOUT_MS = 4_000
 
 // 空白正文与旧记录的 null 同样按「未采集」展示，避免弹出空 <pre>。
 const currentReasoning = computed(() => {
@@ -66,9 +58,20 @@ const recordColumns = [
   { key: 'actions', label: '操作', kind: 'actions' as const, size: '2xl' as const },
 ]
 
-function getPreviewState(recordId: number): PreviewState {
-  return previewStates[recordId] ?? (previewStates[recordId] = { status: 'idle' })
+function getPreviewState(recordId: number) {
+  return preview.getState(recordId)
 }
+
+// 弹窗当前记录的预览状态；详情区块与列表缩略图读的是同一份状态。
+const currentPreviewState = computed(() => currentRecord.value ? preview.getState(currentRecord.value.id) : null)
+
+// 四种非就绪态（加载中 / 渲染中 / 超时或无正文占位 / 请求失败）的渲染判定在 preview-view.ts，
+// 这里只把结果交给模板；判定逻辑有对照测试覆盖。
+const currentResponseView = computed<ResponsePreviewView | null>(() => {
+  const record = currentRecord.value
+  const state = currentPreviewState.value
+  return record && state ? responsePreviewView(record, state) : null
+})
 
 function previewStatusLabel(status: PreviewStatus) {
   switch (status) {
@@ -87,29 +90,8 @@ function previewStatusLabel(status: PreviewStatus) {
   }
 }
 
-function previewDocument(html: string) {
-  const cspMeta = '<meta http-equiv="Content-Security-Policy" content="sandbox allow-scripts">'
-  if (/<head\b[^>]*>/i.test(html))
-    return html.replace(/<head\b[^>]*>/i, match => `${match}${cspMeta}`)
-  return `<!doctype html><html><head>${cspMeta}</head><body>${html}</body></html>`
-}
-
-function clearPreviewTimeout(state: PreviewState) {
-  if (state.renderTimeout !== undefined) {
-    window.clearTimeout(state.renderTimeout)
-    state.renderTimeout = undefined
-  }
-}
-
 function cancelPreviewLoad(recordId: number) {
-  const state = getPreviewState(recordId)
-  if (state.status !== 'loading' && state.status !== 'rendering')
-    return
-  clearPreviewTimeout(state)
-  state.controller?.abort()
-  state.controller = undefined
-  state.srcdoc = undefined
-  state.status = 'idle'
+  preview.cancel(recordId)
 }
 
 function cancelRoundPreviewLoads(roundId: string) {
@@ -117,75 +99,16 @@ function cancelRoundPreviewLoads(roundId: string) {
     cancelPreviewLoad(record.id)
 }
 
-async function loadPreview(record: DetectionRecord) {
-  const state = getPreviewState(record.id)
-  if (state.status !== 'idle')
-    return
-
-  const controller = new AbortController()
-  state.controller = controller
-  state.status = 'loading'
-  const fetchTimeout = window.setTimeout(() => {
-    if (state.status === 'loading') {
-      state.status = 'timeout'
-      controller.abort()
-    }
-  }, PREVIEW_FETCH_TIMEOUT_MS)
-
-  try {
-    const response = await fetch(getDetectionRecordHtmlUrl(record.id), {
-      credentials: 'same-origin',
-      signal: controller.signal,
-    })
-    if (response.status === 404 || response.status === 204) {
-      state.status = 'missing'
-      return
-    }
-    if (!response.ok) {
-      state.status = 'error'
-      return
-    }
-
-    const html = await response.text()
-    if (!html.trim()) {
-      state.status = 'missing'
-      return
-    }
-
-    state.srcdoc = previewDocument(html)
-    state.status = 'rendering'
-    state.renderTimeout = window.setTimeout(() => {
-      if (state.status === 'rendering') {
-        state.status = 'timeout'
-        controller.abort()
-      }
-    }, PREVIEW_RENDER_TIMEOUT_MS)
-  }
-  catch {
-    if (!controller.signal.aborted)
-      state.status = 'error'
-  }
-  finally {
-    window.clearTimeout(fetchTimeout)
-    if (state.controller === controller)
-      state.controller = undefined
-  }
+function loadPreview(record: DetectionRecord) {
+  return preview.load(record.id)
 }
 
 function onPreviewFrameLoad(recordId: number) {
-  const state = getPreviewState(recordId)
-  if (state.status !== 'rendering')
-    return
-  clearPreviewTimeout(state)
-  state.status = 'ready'
+  preview.markRendered(recordId)
 }
 
 function onPreviewFrameError(recordId: number) {
-  const state = getPreviewState(recordId)
-  if (state.status !== 'rendering')
-    return
-  clearPreviewTimeout(state)
-  state.status = 'error'
+  preview.markRenderFailed(recordId)
 }
 
 function handlePreviewKeydown(record: DetectionRecord, event: KeyboardEvent) {
@@ -312,14 +235,22 @@ function viewDetail(record: DetectionRecord) {
   detailModalVisible.value = true
 }
 
+// 弹窗与列表缩略图共用同一个状态机：进弹窗先 fetch 正文，拿到才投 srcdoc，
+// 接口 404 时给「本次探测失败」占位，不再把错误正文当页面渲染。
+watch([detailModalVisible, currentRecord], ([visible, record]) => {
+  if (visible && record)
+    void loadPreview(record)
+  else if (!visible && record)
+    cancelPreviewLoad(record.id)
+})
+
 onMounted(() => {
   createPreviewObserver()
   void loadRounds()
 })
 
 onBeforeUnmount(() => {
-  for (const recordId of Object.keys(previewStates))
-    cancelPreviewLoad(Number(recordId))
+  preview.cancelAll()
   previewObserver?.disconnect()
   previewObserver = null
 })
@@ -554,15 +485,55 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <div>
-          <p class="m-0 mb-2 text-cp-xs font-heavy text-cp-text-quaternary">
-            响应效果
-          </p>
-          <iframe
-            :src="getDetectionRecordHtmlUrl(currentRecord.id)"
-            sandbox="allow-scripts"
-            title="检测响应效果"
-            class="h-[520px] w-full rounded-cp border border-cp-border-secondary"
-          />
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+              响应效果
+            </p>
+            <BaseButton
+              v-if="currentResponseView?.kind === 'error'"
+              size="sm"
+              variant="ghost"
+              aria-label="重新加载响应效果"
+              @click="currentRecord && loadPreview(currentRecord)"
+            >
+              重新加载
+            </BaseButton>
+          </div>
+          <div class="relative min-h-[520px] overflow-hidden rounded-cp border border-cp-border-secondary bg-cp-bg-elevated">
+            <iframe
+              v-if="currentResponseView?.kind === 'iframe'"
+              :srcdoc="currentResponseView.srcdoc"
+              sandbox="allow-scripts"
+              title="检测响应效果"
+              class="h-[520px] w-full border-0"
+              @load="currentRecord && onPreviewFrameLoad(currentRecord.id)"
+              @error="currentRecord && onPreviewFrameError(currentRecord.id)"
+            />
+            <div v-else class="grid min-h-[520px] place-items-center p-6">
+              <div
+                v-if="currentResponseView?.kind === 'spinner'"
+                class="inline-flex items-center gap-2 text-cp-sm font-semibold text-cp-text-secondary"
+              >
+                <RefreshCw class="size-4 animate-spin motion-reduce:animate-none" />
+                {{ currentResponseView.text }}
+              </div>
+              <BaseEmpty
+                v-else-if="currentResponseView?.kind === 'notice'"
+                size="sm"
+                surface="none"
+                :title="currentResponseView.title"
+                :description="currentResponseView.description"
+              />
+              <BaseEmpty
+                v-else
+                class="min-h-[520px]"
+                size="sm"
+                surface="none"
+                title="响应内容加载失败"
+                description="接口请求没有成功，这不代表账号降智；可点击右上角「重新加载」重试。"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </BaseModal>
