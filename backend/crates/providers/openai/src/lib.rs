@@ -31,6 +31,7 @@ pub use config::{CodexWireProfileConfig, OpenAiConfig, OpenAiConfigError};
 pub use provider::{
     CodexProvider, CodexProviderConfigError, CodexProviderTransport, OFFICIAL_CODEX_BASE_PATH,
     OFFICIAL_CODEX_BASE_URL, openai_failure_affects_account_score,
+    websocket_close_failure_contract,
 };
 
 pub mod credential;

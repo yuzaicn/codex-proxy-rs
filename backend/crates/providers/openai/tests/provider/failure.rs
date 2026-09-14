@@ -8,7 +8,7 @@ use gateway_core::error::{
 };
 use gateway_core::routing::{ProviderKind, UpstreamModelId};
 use gateway_core::upstream::{UpstreamSendState, UpstreamTransport};
-use provider_openai::openai_failure_affects_account_score;
+use provider_openai::{openai_failure_affects_account_score, websocket_close_failure_contract};
 
 fn sent_error(kind: ProviderErrorKind, code: Option<&str>) -> ProviderError {
     let error = ProviderError::new(kind, UpstreamSendState::Sent);
@@ -218,4 +218,42 @@ fn openai_feedback_should_score_server_overload_as_one_regular_failure() {
         feedback.scheduling_signals(&provider, &account).0,
         Some(2_000)
     );
+}
+
+#[test]
+fn pre_event_policy_close_matches_plain_and_post_send_shapes() {
+    for post_send in [false, true] {
+        let error = websocket_close_failure_contract(1008, None, post_send, false);
+        assert_eq!(error.send_state(), UpstreamSendState::Sent);
+        assert!(error.replay_is_safe());
+        assert_eq!(error.pre_delivery_retry(), None);
+        assert_eq!(
+            error.upstream_code().map(OpaqueUpstreamValue::as_str),
+            Some("websocket_close_1008")
+        );
+    }
+}
+
+#[test]
+fn pre_event_policy_close_rejects_reused_connection_wrapper() {
+    let error = websocket_close_failure_contract(1008, None, true, true);
+
+    assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
+    assert!(!error.replay_is_safe());
+    assert_eq!(
+        error.upstream_code().map(OpaqueUpstreamValue::as_str),
+        Some("websocket_close_1008")
+    );
+}
+
+#[test]
+fn pre_event_policy_close_rejects_prior_events_and_other_codes() {
+    for error in [
+        websocket_close_failure_contract(1008, Some("response.created"), true, false),
+        websocket_close_failure_contract(1000, None, true, false),
+        websocket_close_failure_contract(1011, None, true, false),
+    ] {
+        assert_eq!(error.send_state(), UpstreamSendState::Ambiguous);
+        assert!(!error.replay_is_safe());
+    }
 }

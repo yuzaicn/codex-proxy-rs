@@ -102,9 +102,9 @@ mod observation;
 mod workers;
 
 use execution::*;
-#[doc(hidden)]
-pub use failure::openai_failure_affects_account_score;
 use failure::*;
+#[doc(hidden)]
+pub use failure::{openai_failure_affects_account_score, websocket_close_failure_contract};
 use observation::*;
 pub(crate) use workers::worker_contributions;
 

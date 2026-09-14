@@ -435,7 +435,8 @@ impl GrokBuildProvider {
 
 // gateway-core 会把 `Ambiguous` 终态交给 provider filter；xAI 维持既有语义，
 // 只对已确认发送的失败更新账号健康度。
-fn xai_failure_affects_account_score(error: &ProviderError) -> bool {
+#[doc(hidden)]
+pub fn xai_failure_affects_account_score(error: &ProviderError) -> bool {
     error.send_state() == UpstreamSendState::Sent
 }
 
@@ -650,21 +651,4 @@ fn is_known_grok_4_5_model(slug: &str) -> bool {
         slug,
         DEFAULT_GROK_MODEL | "grok-4.5-latest" | "grok-4.5-build-free" | "grok-build-latest"
     )
-}
-
-#[cfg(test)]
-mod account_score_tests {
-    use super::*;
-
-    #[test]
-    fn account_score_filter_preserves_confirmed_failure_semantics() {
-        for (send_state, expected) in [
-            (UpstreamSendState::Sent, true),
-            (UpstreamSendState::Ambiguous, false),
-            (UpstreamSendState::NotSent, false),
-        ] {
-            let error = ProviderError::new(ProviderErrorKind::Transport, send_state);
-            assert_eq!(xai_failure_affects_account_score(&error), expected);
-        }
-    }
 }

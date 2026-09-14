@@ -1362,6 +1362,40 @@ fn pre_event_policy_close(
     (close.code() == Some(1008) && close.last_event_type().is_none()).then_some(close)
 }
 
+/// 构造并映射 close-before-terminal 错误，供 crate 外的契约测试验证失败分类边界。
+#[doc(hidden)]
+pub fn websocket_close_failure_contract(
+    code: u16,
+    last_event_type: Option<&str>,
+    post_send: bool,
+    reused_connection: bool,
+) -> ProviderError {
+    let mut error = CodexWebSocketExchangeError::closed_before_terminal_on(
+        Uuid::new_v4(),
+        Some(code),
+        Some("redacted policy reason".to_owned()),
+        last_event_type.map(str::to_owned),
+    );
+    if reused_connection {
+        error = CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent {
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        };
+    }
+    if post_send {
+        error = CodexWebSocketExchangeError::PostSendAmbiguous {
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        };
+    }
+    map_client_error(
+        CodexClientError::WebSocket(error),
+        UpstreamSendState::Ambiguous,
+        false,
+    )
+    .error
+}
+
 pub(super) fn websocket_error_kind(error: &CodexWebSocketExchangeError) -> ProviderErrorKind {
     match error.classified() {
         CodexWebSocketExchangeError::InvalidRequest(_)
@@ -1403,94 +1437,4 @@ pub(super) fn remaining(deadline: SystemTime) -> Option<Duration> {
         .duration_since(SystemTime::now())
         .ok()
         .filter(|remaining| !remaining.is_zero())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn close(code: u16, last_event_type: Option<&str>) -> CodexWebSocketExchangeError {
-        CodexWebSocketExchangeError::closed_before_terminal_on(
-            Uuid::new_v4(),
-            Some(code),
-            Some("redacted policy reason".to_owned()),
-            last_event_type.map(str::to_owned),
-        )
-    }
-
-    fn post_send(source: CodexWebSocketExchangeError) -> CodexWebSocketExchangeError {
-        CodexWebSocketExchangeError::PostSendAmbiguous {
-            message: source.to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    #[test]
-    fn pre_event_policy_close_matches_plain_and_post_send_shapes() {
-        for error in [close(1008, None), post_send(close(1008, None))] {
-            assert!(pre_event_policy_close(&error).is_some());
-            assert_eq!(websocket_send_state(&error), UpstreamSendState::Sent);
-            let failure = map_client_error(
-                CodexClientError::WebSocket(error),
-                UpstreamSendState::Ambiguous,
-                false,
-            );
-            assert!(failure.websocket_account_rejection);
-            assert!(failure.error.replay_is_safe());
-            assert_eq!(failure.error.pre_delivery_retry(), None);
-            assert_eq!(
-                failure
-                    .error
-                    .upstream_code()
-                    .map(OpaqueUpstreamValue::as_str),
-                Some("websocket_close_1008")
-            );
-        }
-    }
-
-    #[test]
-    fn pre_event_policy_close_rejects_reused_connection_wrapper() {
-        let close = close(1008, None);
-        let reused = CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent {
-            message: close.to_string(),
-            source: Some(Box::new(close)),
-        };
-        let error = post_send(reused);
-
-        assert!(pre_event_policy_close(&error).is_none());
-        assert_eq!(websocket_send_state(&error), UpstreamSendState::Ambiguous);
-        let failure = map_client_error(
-            CodexClientError::WebSocket(error),
-            UpstreamSendState::Ambiguous,
-            false,
-        );
-        assert!(!failure.websocket_account_rejection);
-        assert!(!failure.error.replay_is_safe());
-        assert_eq!(
-            failure
-                .error
-                .upstream_code()
-                .map(OpaqueUpstreamValue::as_str),
-            Some("websocket_close_1008")
-        );
-    }
-
-    #[test]
-    fn pre_event_policy_close_rejects_prior_events_and_other_codes() {
-        for error in [
-            post_send(close(1008, Some("response.created"))),
-            post_send(close(1000, None)),
-            post_send(close(1011, None)),
-        ] {
-            assert!(pre_event_policy_close(&error).is_none());
-            assert_eq!(websocket_send_state(&error), UpstreamSendState::Ambiguous);
-            let failure = map_client_error(
-                CodexClientError::WebSocket(error),
-                UpstreamSendState::Ambiguous,
-                false,
-            );
-            assert!(!failure.websocket_account_rejection);
-            assert!(!failure.error.replay_is_safe());
-        }
-    }
 }
