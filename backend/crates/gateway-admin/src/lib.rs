@@ -9,8 +9,8 @@ use gateway_core::{
     routing::ProviderKind,
     runtime::SnapshotControl,
     task::{
-        DaemonRestartPolicy, WorkerContribution, WorkerId, WorkerKind, WorkerRegistration,
-        WorkerRunnable, WorkerSchedule,
+        DaemonRestartPolicy, WorkerContribution, WorkerId, WorkerKind, WorkerLeaseRequest,
+        WorkerRegistration, WorkerRunnable, WorkerSchedule,
     },
 };
 use secrecy::{ExposeSecret as _, SecretString};
@@ -68,15 +68,16 @@ const RESET_DETECTION_WORKER_OWNER: &str = "reset-detection";
 const DETECTION_WORKER_TICK: Duration = Duration::from_secs(60);
 const DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
-/// 单副本部署不启用 leader lease；schedule 仍要求合法的 lease 参数占位。
-const DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
-const DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
+/// 降智检测 worker 的 leader lease 生命周期；长轮次由 Host 按 renewal 间隔续租。
+const DETECTION_WORKER_LEASE_TTL: Duration = Duration::from_secs(30);
+const DETECTION_WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 /// 重置卡配置最短为 30 秒；固定 tick 使后台修改在一个最短周期内生效。
 const RESET_DETECTION_WORKER_TICK: Duration = Duration::from_secs(30);
 const RESET_DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const RESET_DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
-const RESET_DETECTION_WORKER_UNUSED_LEASE_TTL: Duration = Duration::from_secs(30);
-const RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL: Duration = Duration::from_secs(10);
+/// 重置卡检测 worker 的 leader lease 生命周期；长轮次由 Host 按 renewal 间隔续租。
+const RESET_DETECTION_WORKER_LEASE_TTL: Duration = Duration::from_secs(30);
+const RESET_DETECTION_WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 
 /// 只用于首次幂等创建默认管理员的启动密码。
 #[derive(Clone, Deserialize)]
@@ -421,7 +422,7 @@ fn backup_worker_contribution(
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 
-/// 降智检测 Worker 注册：单副本无 lease 的周期任务，owner 固定为 `detection`。
+/// 降智检测 Worker 注册：多实例只允许持有 leader lease 的实例执行，owner 固定为 `detection`。
 fn detection_worker_contribution(
     task: workers::intelligence_detection::IntelligenceDetectionTask,
 ) -> Result<Vec<WorkerContribution>, AdminError> {
@@ -431,15 +432,17 @@ fn detection_worker_contribution(
         DETECTION_WORKER_TICK,
         DETECTION_WORKER_INITIAL_BACKOFF,
         DETECTION_WORKER_MAXIMUM_BACKOFF,
-        DETECTION_WORKER_UNUSED_LEASE_TTL,
-        DETECTION_WORKER_UNUSED_LEASE_RENEWAL,
+        DETECTION_WORKER_LEASE_TTL,
+        DETECTION_WORKER_LEASE_RENEWAL,
     )
     .map_err(|_| AdminError::internal("降智检测 Worker 调度参数不合法"))?;
+    let lease = WorkerLeaseRequest::try_new(id.clone(), DETECTION_WORKER_LEASE_TTL)
+        .map_err(|_| AdminError::internal("降智检测 Worker 租约参数不合法"))?;
     let registration = WorkerRegistration::try_new(
         id,
         WorkerRunnable::Scheduled {
             schedule,
-            lease: None,
+            lease: Some(lease),
             task: Box::new(task),
         },
     )
@@ -447,7 +450,7 @@ fn detection_worker_contribution(
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 
-/// 重置卡检测 Worker 注册：单副本无 lease 的周期任务，owner 固定为 `reset-detection`。
+/// 重置卡检测 Worker 注册：多实例只允许持有 leader lease 的实例执行，owner 固定为 `reset-detection`。
 fn reset_detection_worker_contribution(
     task: workers::reset_detection::ResetDetectionTask,
 ) -> Result<Vec<WorkerContribution>, AdminError> {
@@ -457,15 +460,17 @@ fn reset_detection_worker_contribution(
         RESET_DETECTION_WORKER_TICK,
         RESET_DETECTION_WORKER_INITIAL_BACKOFF,
         RESET_DETECTION_WORKER_MAXIMUM_BACKOFF,
-        RESET_DETECTION_WORKER_UNUSED_LEASE_TTL,
-        RESET_DETECTION_WORKER_UNUSED_LEASE_RENEWAL,
+        RESET_DETECTION_WORKER_LEASE_TTL,
+        RESET_DETECTION_WORKER_LEASE_RENEWAL,
     )
     .map_err(|_| AdminError::internal("重置卡检测 Worker 调度参数不合法"))?;
+    let lease = WorkerLeaseRequest::try_new(id.clone(), RESET_DETECTION_WORKER_LEASE_TTL)
+        .map_err(|_| AdminError::internal("重置卡检测 Worker 租约参数不合法"))?;
     let registration = WorkerRegistration::try_new(
         id,
         WorkerRunnable::Scheduled {
             schedule,
-            lease: None,
+            lease: Some(lease),
             task: Box::new(task),
         },
     )

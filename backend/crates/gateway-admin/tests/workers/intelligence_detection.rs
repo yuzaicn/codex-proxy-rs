@@ -90,6 +90,7 @@ struct DetectionFixture {
     config: DetectionConfig,
     targets: Vec<DetectionTarget>,
     records: Arc<Mutex<Vec<NewDetectionRecord>>>,
+    latest_checked_at: Arc<Mutex<Option<chrono::DateTime<Utc>>>>,
     fail_account: Option<String>,
 }
 
@@ -105,6 +106,7 @@ impl DetectionFixture {
             },
             targets,
             records: Arc::new(Mutex::new(Vec::new())),
+            latest_checked_at: Arc::new(Mutex::new(None)),
             fail_account: None,
         })
     }
@@ -115,6 +117,13 @@ impl DetectionFixture {
 
     fn records(&self) -> Vec<NewDetectionRecord> {
         self.records.lock().expect("detection records").clone()
+    }
+
+    fn set_latest_checked_at(&self, checked_at: chrono::DateTime<Utc>) {
+        *self
+            .latest_checked_at
+            .lock()
+            .expect("latest detection timestamp") = Some(checked_at);
     }
 }
 
@@ -147,6 +156,13 @@ impl DetectionStore for DetectionFixture {
         Err(store_error("detection rounds"))
     }
 
+    async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<chrono::DateTime<Utc>>> {
+        Ok(*self
+            .latest_checked_at
+            .lock()
+            .expect("latest detection timestamp"))
+    }
+
     async fn list_detection_targets(
         &self,
         _: &DetectionAccountScope,
@@ -163,6 +179,10 @@ impl DetectionStore for DetectionFixture {
             return Err(store_error("detection records"));
         }
         self.records.lock().expect("detection records").push(record);
+        *self
+            .latest_checked_at
+            .lock()
+            .expect("latest detection timestamp") = Some(Utc::now());
         Ok(())
     }
 }
@@ -307,4 +327,18 @@ async fn detection_probe_concurrency_is_bounded() {
     run_detection(detection, probe.clone(), 32).await;
 
     assert_eq!(probe.peak(), 16);
+}
+
+#[tokio::test]
+async fn recent_database_round_blocks_new_instance_cycle() {
+    let detection = DetectionFixture::new(targets(1));
+    detection.set_latest_checked_at(Utc::now());
+    let probe = Arc::new(CountingProbe {
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    });
+    run_detection(detection.clone(), probe.clone(), 1).await;
+
+    assert!(detection.records().is_empty());
+    assert_eq!(probe.peak(), 0);
 }

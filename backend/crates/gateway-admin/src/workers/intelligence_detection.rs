@@ -6,15 +6,16 @@
 //! 账号也能被探测到），存储读写全部经由 Admin ports，不触碰 HTTP 层与 Provider SDK。
 //!
 //! 自动恢复带来源守卫：只有 `scheduling_suspended_by = detection` 的账号会在探测
-//! 恢复正常后被解除暂停，人工暂停不受检测结果影响。当前部署为单副本，不需要
-//! Redis leader lease。
+//! 恢复正常后被解除暂停，人工暂停不受检测结果影响。多实例部署通过 Host 提供的
+//! Redis leader lease 保证同一轮只有一个实例执行。
 
 use std::sync::{
-    Arc, Mutex, PoisonError,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
 use gateway_core::{
@@ -66,7 +67,6 @@ pub struct IntelligenceDetectionTask {
     providers: ProviderAdminRegistry,
     probe: Arc<dyn AccountProbe>,
     snapshot: Arc<dyn SnapshotControl>,
-    last_round_started_at: Mutex<Option<Instant>>,
     round_in_progress: AtomicBool,
 }
 
@@ -96,7 +96,6 @@ impl IntelligenceDetectionTask {
             providers,
             probe,
             snapshot,
-            last_round_started_at: Mutex::new(None),
             round_in_progress: AtomicBool::new(false),
         }
     }
@@ -117,7 +116,7 @@ impl IntelligenceDetectionTask {
             warn!("降智检测已启用但检测模型为空或不合法，跳过本轮");
             return Ok(());
         };
-        let Some(_round_guard) = self.round_due(&config) else {
+        let Some(_round_guard) = self.round_due(&config).await? else {
             return Ok(());
         };
         let targets = self
@@ -204,28 +203,29 @@ impl IntelligenceDetectionTask {
         Ok(())
     }
 
-    /// 尝试开始一轮：未到间隔或已有轮次在途时返回 `None`。
-    fn round_due(&self, config: &DetectionConfig) -> Option<RoundGuard<'_>> {
+    /// 尝试开始一轮：间隔以数据库最近落库记录为准，避免实例重启后立即放行。
+    async fn round_due(
+        &self,
+        config: &DetectionConfig,
+    ) -> Result<Option<RoundGuard<'_>>, WorkerTaskError> {
         if self.round_in_progress.swap(true, Ordering::Acquire) {
-            return None;
+            return Ok(None);
         }
         let interval = Duration::from_secs(u64::from(config.interval_secs.max(1)));
-        let mut guard = self
-            .last_round_started_at
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match *guard {
-            Some(started_at) if started_at.elapsed() < interval => {
+        let latest_checked_at = match self.detection.latest_detection_checked_at().await {
+            Ok(checked_at) => checked_at,
+            Err(error) => {
                 self.round_in_progress.store(false, Ordering::Release);
-                None
+                return Err(store_error(error));
             }
-            _ => {
-                *guard = Some(Instant::now());
-                Some(RoundGuard {
-                    in_progress: &self.round_in_progress,
-                })
-            }
+        };
+        if latest_checked_at.is_some_and(|checked_at| is_within_interval(checked_at, interval)) {
+            self.round_in_progress.store(false, Ordering::Release);
+            return Ok(None);
         }
+        Ok(Some(RoundGuard {
+            in_progress: &self.round_in_progress,
+        }))
     }
 
     /// 探测单个账号并落检测记录；探测失败只告警不落记录，返回 `None`。
@@ -352,6 +352,12 @@ impl ScheduledTask for IntelligenceDetectionTask {
 
 fn store_error(error: AdminStoreError) -> WorkerTaskError {
     WorkerTaskError::safe(error.to_string())
+}
+
+fn is_within_interval(checked_at: DateTime<Utc>, interval: Duration) -> bool {
+    let elapsed = Utc::now().signed_duration_since(checked_at);
+    elapsed < chrono::Duration::zero()
+        || chrono::Duration::from_std(interval).is_ok_and(|limit| elapsed < limit)
 }
 
 /// 为一轮检测生成可复现的提示词；同一轮所有账号共享这一提示词。

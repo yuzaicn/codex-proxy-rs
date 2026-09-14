@@ -42,6 +42,7 @@ pub mod redis;
 pub(crate) use admin_adapter::*;
 pub use bundle::*;
 pub use config::*;
+pub use postgres::PostgresSchemaHealthProbe;
 pub use value::*;
 pub use workers::PostgresHealthProbe;
 pub(crate) use workers::*;

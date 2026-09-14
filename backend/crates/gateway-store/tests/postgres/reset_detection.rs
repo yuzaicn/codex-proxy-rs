@@ -93,6 +93,12 @@ async fn reset_credit_observation_and_consume_reservation_should_persist() {
         observation.1.timestamp_micros(),
         observed_at.timestamp_micros()
     );
+    let latest = store
+        .latest_reset_detection_observed_at()
+        .await
+        .expect("load latest reset credits observation")
+        .expect("latest reset credits observation");
+    assert_eq!(latest.timestamp_micros(), observed_at.timestamp_micros());
 
     let first_id = Uuid::new_v4();
     let second_id = Uuid::new_v4();

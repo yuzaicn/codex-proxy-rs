@@ -1,6 +1,8 @@
 //! PostgreSQL 业务表的 adapters。
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
+use gateway_core::health::{HealthProbe, HealthState};
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -53,6 +55,54 @@ pub(crate) use usage_facts::{
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+
+/// 检查共享数据库是否完整应用了当前二进制冻结的 migration 集。
+pub struct PostgresSchemaHealthProbe {
+    pool: PgPool,
+}
+
+impl PostgresSchemaHealthProbe {
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl HealthProbe for PostgresSchemaHealthProbe {
+    fn name(&self) -> &'static str {
+        "postgres_schema"
+    }
+
+    fn check(&self) -> BoxFuture<'_, HealthState> {
+        Box::pin(async move {
+            let rows = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+                "select version, checksum, success from _sqlx_migrations order by version",
+            )
+            .fetch_all(&self.pool)
+            .await;
+            let Ok(rows) = rows else {
+                return HealthState::Unhealthy(
+                    "PostgreSQL migration state is unavailable".to_owned(),
+                );
+            };
+            let expected = MIGRATOR.iter().count();
+            let complete = rows.len() == expected
+                && rows.iter().all(|(_, _, success)| *success)
+                && MIGRATOR.iter().all(|migration| {
+                    rows.iter().any(|(version, checksum, success)| {
+                        *success
+                            && *version == migration.version
+                            && checksum.as_slice() == migration.checksum.as_ref()
+                    })
+                });
+            if complete {
+                HealthState::Healthy
+            } else {
+                HealthState::Unhealthy("PostgreSQL migrations are incomplete".to_owned())
+            }
+        })
+    }
+}
 
 /// 建立 PostgreSQL pool 并只执行冻结的 migration 集。
 pub async fn connect_and_migrate(

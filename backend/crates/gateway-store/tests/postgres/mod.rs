@@ -5,7 +5,8 @@ use gateway_store::postgres::{
     PgObservabilityRepository, connect_and_migrate,
 };
 use sqlx::{
-    ConnectOptions as _, PgPool,
+    ConnectOptions as _, PgPool, SqlSafeStr as _,
+    migrate::{Migration, MigrationType, Migrator},
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use uuid::Uuid;
@@ -262,6 +263,35 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "routing_scope",
         ]
     );
+}
+
+#[tokio::test]
+async fn older_migrator_rejects_a_newer_applied_migration() {
+    let Some(database) = TestDatabase::create("version_missing").await else {
+        return;
+    };
+    let mut migrations = TEST_MIGRATOR.iter().cloned().collect::<Vec<_>>();
+    migrations.push(Migration::new(
+        9_999,
+        "future migration".into(),
+        MigrationType::ReversibleUp,
+        "select 1;".into_sql_str(),
+        false,
+    ));
+    Migrator::with_migrations(migrations)
+        .run(&database.pool)
+        .await
+        .expect("apply future migration");
+
+    let error = TEST_MIGRATOR
+        .run(&database.pool)
+        .await
+        .expect_err("older migration set must reject unknown applied version");
+    assert!(matches!(
+        error,
+        sqlx::migrate::MigrateError::VersionMissing(9_999)
+    ));
+    database.close().await;
 }
 
 #[test]

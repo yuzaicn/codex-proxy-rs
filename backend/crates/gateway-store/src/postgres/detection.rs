@@ -195,6 +195,18 @@ impl PgDetectionStore {
         .map_err(|_| postgres_unavailable("list detection rounds"))
     }
 
+    async fn load_latest_checked_at(&self) -> StoreResult<Option<DateTime<Utc>>> {
+        sqlx::query_scalar::<_, DateTime<Utc>>(
+            "select checked_at
+             from intelligence_detection_records
+             order by checked_at desc, id desc
+             limit 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| postgres_unavailable("load latest detection timestamp"))
+    }
+
     async fn load_targets(&self, scope: &DetectionAccountScope) -> StoreResult<Vec<TargetRow>> {
         let rows = match scope {
             // 全量范围只探测仍启用的账号：禁用账号不参与调度，探测只烧配额。
@@ -297,6 +309,12 @@ impl DetectionStore for PgDetectionStore {
         self.load_rounds(limit)
             .await
             .and_then(|rows| rows.into_iter().map(detection_round_from_row).collect())
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
+    async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>> {
+        self.load_latest_checked_at()
+            .await
             .map_err(|error| admin_store_error(ENTITY, error))
     }
 

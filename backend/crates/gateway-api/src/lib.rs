@@ -134,6 +134,7 @@ pub fn initialize(
     let index = config.asset_directory.join("index.html");
     let mut router = Router::new()
         .route("/healthz", get(health::healthz))
+        .route("/ready", get(health::ready))
         .merge(openai::router::router())
         .merge(admin::router::<ApiState>())
         .fallback_service(ServeDir::new(config.asset_directory).fallback(ServeFile::new(index)));
