@@ -430,6 +430,7 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
         .intelligence_detection_operation(
             &UpstreamModelId::new("grok-4.5").expect("upstream model"),
             "Reply with exactly OK.",
+            "max",
         )
         .expect("detection operation");
     let Operation::Generate(detection_request) = detection_operation else {

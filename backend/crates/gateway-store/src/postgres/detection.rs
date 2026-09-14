@@ -28,7 +28,7 @@ use super::runtime_settings::bump_config_revision_in_transaction;
 
 const ENTITY: &str = "intelligence detection";
 
-type ConfigRow = (bool, serde_json::Value, i32, String, DateTime<Utc>);
+type ConfigRow = (bool, serde_json::Value, i32, String, String, DateTime<Utc>);
 type RecordRow = (
     i64,
     String,
@@ -42,8 +42,9 @@ type RecordRow = (
     bool,
     Option<String>,
     Option<String>,
+    Vec<String>,
 );
-type RoundRow = (String, DateTime<Utc>, i64, i64);
+type RoundRow = (String, DateTime<Utc>, i64, i64, Option<i64>);
 type TargetRow = (String, String, bool, Option<String>);
 
 /// 降智检测配置与检测记录的 PostgreSQL adapter。
@@ -60,7 +61,7 @@ impl PgDetectionStore {
 
     async fn load_config(&self) -> StoreResult<Option<DetectionConfig>> {
         let row = sqlx::query_as::<_, ConfigRow>(
-            "select enabled, account_scope, interval_secs, model, updated_at
+            "select enabled, account_scope, interval_secs, model, reasoning_effort, updated_at
              from intelligence_detection_configs order by id limit 1",
         )
         .fetch_optional(&self.pool)
@@ -89,14 +90,16 @@ impl PgDetectionStore {
             let updated = sqlx::query_as::<_, ConfigRow>(
                 "update intelligence_detection_configs
                  set enabled = $1, account_scope = $2, interval_secs = $3, model = $4,
+                     reasoning_effort = $5,
                      updated_at = now()
                  where id = (select id from intelligence_detection_configs order by id limit 1)
-                 returning enabled, account_scope, interval_secs, model, updated_at",
+                 returning enabled, account_scope, interval_secs, model, reasoning_effort, updated_at",
             )
             .bind(command.enabled)
             .bind(&scope)
             .bind(interval_secs)
             .bind(&command.model)
+            .bind(&command.reasoning_effort)
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| postgres_unavailable("update detection config"))?;
@@ -104,14 +107,15 @@ impl PgDetectionStore {
                 Some(row) => row,
                 None => sqlx::query_as::<_, ConfigRow>(
                     "insert into intelligence_detection_configs
-                     (enabled, account_scope, interval_secs, model)
-                     values ($1, $2, $3, $4)
-                     returning enabled, account_scope, interval_secs, model, updated_at",
+                    (enabled, account_scope, interval_secs, model, reasoning_effort)
+                     values ($1, $2, $3, $4, $5)
+                     returning enabled, account_scope, interval_secs, model, reasoning_effort, updated_at",
                 )
                 .bind(command.enabled)
                 .bind(&scope)
                 .bind(interval_secs)
                 .bind(&command.model)
+                .bind(&command.reasoning_effort)
                 .fetch_one(&mut *transaction)
                 .await
                 .map_err(|_| postgres_unavailable("insert detection config"))?,
@@ -147,7 +151,7 @@ impl PgDetectionStore {
                     "select r.id, r.detection_round_id::text, r.account_id,
                             a.email, a.name, a.provider_kind, a.plan_type,
                             a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content, r.prompt_used
+                            r.reasoning_content, r.prompt_used, r.matched_phrases
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      where r.detection_round_id = $1::uuid
@@ -164,7 +168,7 @@ impl PgDetectionStore {
                     "select r.id, r.detection_round_id::text, r.account_id,
                             a.email, a.name, a.provider_kind, a.plan_type,
                             a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content, r.prompt_used
+                            r.reasoning_content, r.prompt_used, r.matched_phrases
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      order by r.checked_at desc, r.id desc limit $1 offset $2",
@@ -183,7 +187,9 @@ impl PgDetectionStore {
             "select detection_round_id::text,
                     max(checked_at),
                     count(*) filter (where degraded),
-                    count(*) filter (where not degraded)
+                    count(*) filter (where not degraded),
+                    case when count(suspension_released) = 0 then null
+                         else count(*) filter (where suspension_released) end
              from intelligence_detection_records
              group by detection_round_id
              order by max(checked_at) desc
@@ -213,7 +219,9 @@ impl PgDetectionStore {
             DetectionAccountScope::AllAccounts => {
                 sqlx::query_as::<_, TargetRow>(
                     "select id, provider_kind, scheduling_suspended, scheduling_suspended_by
-                     from provider_accounts where enabled = true order by id",
+                     from provider_accounts
+                     where enabled = true and provider_kind = 'openai'
+                     order by id",
                 )
                 .fetch_all(&self.pool)
                 .await
@@ -221,7 +229,9 @@ impl PgDetectionStore {
             DetectionAccountScope::SelectedAccounts { account_ids } => {
                 sqlx::query_as::<_, TargetRow>(
                     "select id, provider_kind, scheduling_suspended, scheduling_suspended_by
-                     from provider_accounts where id = any($1::text[]) order by id",
+                     from provider_accounts
+                     where id = any($1::text[]) and provider_kind = 'openai'
+                     order by id",
                 )
                 .bind(account_ids.as_slice())
                 .fetch_all(&self.pool)
@@ -245,8 +255,8 @@ impl PgDetectionStore {
     async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
         sqlx::query(
             "insert into intelligence_detection_records
-             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases)
-             values ($1::uuid, $2, $3, $4, $5, $6, $7)",
+             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases, suspension_released)
+             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(record.detection_round_id.to_string())
         .bind(&record.account_id)
@@ -255,9 +265,17 @@ impl PgDetectionStore {
         .bind(record.reasoning_content.as_deref())
         .bind(record.prompt_used.as_deref())
         .bind(record.matched_phrases.as_slice())
+        .bind(record.suspension_released)
         .execute(&self.pool)
         .await
         .map_err(|_| postgres_unavailable("insert detection record"))?;
+        Ok(())
+    }
+
+    async fn mark_released(&self, round_id: Uuid, account_id: &str) -> StoreResult<()> {
+        sqlx::query("update intelligence_detection_records set suspension_released = true where detection_round_id = $1::uuid and account_id = $2")
+            .bind(round_id.to_string()).bind(account_id).execute(&self.pool).await
+            .map_err(|_| postgres_unavailable("mark suspension released"))?;
         Ok(())
     }
 }
@@ -280,10 +298,16 @@ impl DetectionStore for PgDetectionStore {
             "detection_config.replace",
             "intelligence_detection_config",
             "1",
-            ["enabled", "account_scope", "interval_secs", "model"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
+            [
+                "enabled",
+                "account_scope",
+                "interval_secs",
+                "model",
+                "reasoning_effort",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         );
         let (revision, config) = self
             .replace_config(command, audit)
@@ -334,6 +358,16 @@ impl DetectionStore for PgDetectionStore {
             .map_err(|error| admin_store_error(ENTITY, error))
     }
 
+    async fn mark_suspension_released(
+        &self,
+        round_id: Uuid,
+        account_id: &str,
+    ) -> AdminStoreResult<()> {
+        self.mark_released(round_id, account_id)
+            .await
+            .map_err(|error| admin_store_error(ENTITY, error))
+    }
+
     async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>> {
         self.load_record_html(record_id)
             .await
@@ -342,13 +376,14 @@ impl DetectionStore for PgDetectionStore {
 }
 
 fn detection_config_from_row(row: ConfigRow) -> StoreResult<DetectionConfig> {
-    let (enabled, scope, interval_secs, model, updated_at) = row;
+    let (enabled, scope, interval_secs, model, reasoning_effort, updated_at) = row;
     Ok(DetectionConfig {
         enabled,
         account_scope: parse_account_scope(&scope)?,
         interval_secs: u32::try_from(interval_secs)
             .map_err(|_| invalid("negative detection interval"))?,
         model,
+        reasoning_effort,
         updated_at,
     })
 }
@@ -367,6 +402,7 @@ fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
         degraded,
         reasoning_content,
         prompt_used,
+        matched_phrases,
     ) = row;
     Ok(DetectionRecord {
         id,
@@ -382,17 +418,22 @@ fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
         scheduling_suspended,
         reasoning_content,
         prompt_used,
+        matched_phrases,
     })
 }
 
 fn detection_round_from_row(row: RoundRow) -> StoreResult<DetectionRound> {
-    let (detection_round_id, checked_at, degraded_count, normal_count) = row;
+    let (detection_round_id, checked_at, degraded_count, normal_count, recovered_count) = row;
     Ok(DetectionRound {
         detection_round_id: parse_round_id(&detection_round_id)?,
         checked_at,
         degraded_count: u64::try_from(degraded_count)
             .map_err(|_| invalid("negative degraded count"))?,
         normal_count: u64::try_from(normal_count).map_err(|_| invalid("negative normal count"))?,
+        recovered_count: recovered_count
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| invalid("negative recovered count"))?,
     })
 }
 

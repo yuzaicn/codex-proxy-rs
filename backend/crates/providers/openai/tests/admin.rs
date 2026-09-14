@@ -607,6 +607,7 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
         .intelligence_detection_operation(
             &UpstreamModelId::new("gpt-5.4").expect("upstream model"),
             "Reply with exactly OK.",
+            "max",
         )
         .expect("detection operation");
     let Operation::Generate(detection_request) = detection_operation else {
@@ -621,7 +622,7 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
             .and_then(Value::as_object)
             .and_then(|reasoning| reasoning.get("effort"))
             .and_then(Value::as_str),
-        Some("high")
+        Some("max")
     );
     assert_eq!(
         detection_encoded

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,7 @@ use futures::future::BoxFuture;
 
 use gateway_core::account::{AccountSelectionPolicy, ProviderAccountId, RotationStrategy};
 use gateway_core::lifecycle::CancellationToken;
+use gateway_core::operation::OperationKind;
 use gateway_core::policy::{ClientApiKeyId, PlaintextClientApiKey, RateLimits};
 use gateway_core::routing::snapshot::{
     RuntimeSnapshotCompiler, SnapshotAccountGroupFacts, SnapshotAccountGroupMemberFacts,
@@ -17,8 +18,9 @@ use gateway_core::routing::snapshot::{
     SnapshotStoreError, SnapshotStorePort,
 };
 use gateway_core::routing::{
-    AccountGroupId, ConfigRevision, ProviderCatalogGeneration, ProviderCatalogPort,
-    ProviderCatalogUnavailable, ProviderKind, ProviderModelCapabilities, RuntimeSnapshot,
+    AccountGroupId, ConfigRevision, ModelCapabilities, ModelPresentation,
+    ProviderCatalogGeneration, ProviderCatalogPort, ProviderCatalogUnavailable, ProviderKind,
+    ProviderModel, ProviderModelCapabilities, RuntimeSnapshot, UpstreamModelId,
 };
 use gateway_core::runtime::{
     RuntimeSnapshotHandle, RuntimeSnapshotPublisher, SnapshotControl, SnapshotRevisionStream,
@@ -138,6 +140,41 @@ fn handle_should_keep_request_snapshot_frozen_across_publish() {
 
     assert_eq!(frozen.revision().get(), 1);
     assert_eq!(handle.revision().map(ConfigRevision::get), Some(2));
+}
+
+#[test]
+fn handle_should_expose_catalog_reasoning_efforts_for_the_exact_model() {
+    let provider = ProviderKind::new("openai").expect("provider");
+    let model = UpstreamModelId::new("gpt-5.6-terra").expect("model");
+    let presentation = ModelPresentation::new(None, None).with_reasoning(
+        Some("medium".to_owned()),
+        vec!["low".to_owned(), "high".to_owned(), "max".to_owned()],
+    );
+    let snapshot = RuntimeSnapshot::new(
+        revision(1),
+        AccountSelectionPolicy::new(
+            RotationStrategy::Smart,
+            NonZeroU32::new(1).expect("positive concurrency"),
+            Duration::ZERO,
+        ),
+        vec![provider.clone()],
+        vec![
+            ProviderModel::new(
+                provider.clone(),
+                model.clone(),
+                ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), None),
+            )
+            .with_presentation(presentation),
+        ],
+        Vec::new(),
+    )
+    .expect("runtime snapshot");
+    let handle = RuntimeSnapshotHandle::new(snapshot);
+
+    assert_eq!(
+        handle.supported_reasoning_efforts(&provider, &model),
+        ["low", "high", "max"]
+    );
 }
 
 #[test]

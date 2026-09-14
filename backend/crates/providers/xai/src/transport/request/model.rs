@@ -66,7 +66,9 @@ fn normalize_grok_reasoning_effort_value(value: &Value, model: &str) -> Option<&
         "minimal" | "low" => Some("low"),
         "medium" => Some("medium"),
         "xhigh" if matches!(model, "grok-4.6" | "grok-4.6-latest") => Some("xhigh"),
-        "high" | "xhigh" => Some("high"),
+        // xAI has no distinct `max` tier; keep the configured maximum
+        // observable by mapping it to the provider's highest supported tier.
+        "high" | "xhigh" | "max" => Some("high"),
         _ => None,
     }
 }

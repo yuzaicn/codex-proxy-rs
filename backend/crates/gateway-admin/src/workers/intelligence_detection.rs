@@ -20,7 +20,8 @@ use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
 use gateway_core::{
     account::{ProviderAccountId, SchedulingSuspensionSource},
-    engine::probe::{AccountProbe, AccountProbeRequest},
+    engine::probe::{AccountProbe, AccountProbeError, AccountProbeRequest, AccountProbeResult},
+    error::GatewayErrorKind,
     lifecycle::CancellationToken,
     routing::{ConfigRevision, UpstreamModelId},
     runtime::SnapshotControl,
@@ -35,7 +36,7 @@ use crate::{
         detection::{DetectionConfig, DetectionTarget, NewDetectionRecord},
     },
     ports::{
-        provider::ProviderAdminRegistry,
+        provider::{ProviderAdmin, ProviderAdminError, ProviderAdminRegistry},
         store::{AccountStore, AdminStoreError, DetectionStore},
     },
 };
@@ -72,6 +73,27 @@ pub struct IntelligenceDetectionTask {
 
 struct RoundGuard<'a> {
     in_progress: &'a AtomicBool,
+}
+
+enum DetectionProbeFailure {
+    Build(ProviderAdminError),
+    Request(AccountProbeError),
+}
+
+impl DetectionProbeFailure {
+    fn is_invalid_request(&self) -> bool {
+        matches!(
+            self,
+            Self::Request(error) if error.kind() == GatewayErrorKind::InvalidRequest
+        )
+    }
+
+    fn safe_message(&self) -> String {
+        match self {
+            Self::Build(error) => format!("构造探测请求失败：{error}"),
+            Self::Request(error) => error.client_message().to_owned(),
+        }
+    }
 }
 
 impl Drop for RoundGuard<'_> {
@@ -127,18 +149,25 @@ impl IntelligenceDetectionTask {
         if targets.is_empty() {
             return Ok(());
         }
+        let advertised_efforts = self
+            .snapshot
+            .supported_reasoning_efforts(&targets[0].provider_kind, &upstream_model);
+        let reasoning_effort =
+            resolve_reasoning_effort(&config.reasoning_effort, &advertised_efforts);
         let round_id = Uuid::new_v4();
         let prompt = prompt_for_round(round_id);
         info!(
             %round_id,
             targets = targets.len(),
             model = upstream_model.as_str(),
+            reasoning_effort,
             "降智检测轮次开始"
         );
         let outcomes = stream::iter(targets.into_iter().map(|target| {
             let cancellation = cancellation.clone();
             let upstream_model = upstream_model.clone();
             let prompt = prompt.clone();
+            let reasoning_effort = reasoning_effort.clone();
             async move {
                 if cancellation.is_cancelled() {
                     return None;
@@ -148,7 +177,14 @@ impl IntelligenceDetectionTask {
                     return None;
                 };
                 let degraded = match self
-                    .probe_and_record(&account_id, &target, &upstream_model, &prompt, round_id)
+                    .probe_and_record(
+                        &account_id,
+                        &target,
+                        &upstream_model,
+                        &prompt,
+                        &reasoning_effort,
+                        round_id,
+                    )
                     .await
                 {
                     Ok(Some(degraded)) => degraded,
@@ -235,6 +271,7 @@ impl IntelligenceDetectionTask {
         target: &DetectionTarget,
         upstream_model: &UpstreamModelId,
         prompt: &str,
+        reasoning_effort: &str,
         round_id: Uuid,
     ) -> Result<Option<bool>, WorkerTaskError> {
         let Ok(provider) = self.providers.require(&target.provider_kind) else {
@@ -245,53 +282,111 @@ impl IntelligenceDetectionTask {
             );
             return Ok(None);
         };
-        let operation = match provider.intelligence_detection_operation(upstream_model, prompt) {
-            Ok(operation) => operation,
-            Err(error) => {
-                warn!(
-                    account = target.account_id,
-                    %error,
-                    "构造探测 operation 失败，跳过该账号"
-                );
-                return Ok(None);
-            }
-        };
-        let result = self
-            .probe
-            .probe(AccountProbeRequest {
-                account_id: account_id.clone(),
-                provider_kind: target.provider_kind.clone(),
-                upstream_model: upstream_model.clone(),
-                operation,
-            })
+        let mut effective_effort = reasoning_effort.to_owned();
+        let mut fallback_note = None;
+        let mut result = self
+            .execute_probe(
+                provider.as_ref(),
+                account_id,
+                target,
+                upstream_model,
+                prompt,
+                &effective_effort,
+            )
             .await;
+        if effective_effort == "xhigh"
+            && result
+                .as_ref()
+                .is_err_and(DetectionProbeFailure::is_invalid_request)
+        {
+            effective_effort = "high".to_owned();
+            fallback_note =
+                Some("reasoning_effort=xhigh 被上游拒绝，本轮已自动退档到 high".to_owned());
+            result = self
+                .execute_probe(
+                    provider.as_ref(),
+                    account_id,
+                    target,
+                    upstream_model,
+                    prompt,
+                    &effective_effort,
+                )
+                .await;
+        }
         let (text, reasoning) = match result {
             Ok(result) => (result.text.concat(), result.reasoning.concat()),
             Err(error) => {
+                let failure = format!(
+                    "{}探测失败（reasoning_effort={effective_effort}）：{}",
+                    fallback_note
+                        .as_deref()
+                        .map_or(String::new(), |note| format!("{note}；")),
+                    error.safe_message()
+                );
                 warn!(
                     account = target.account_id,
                     %round_id,
-                    error = error.client_message(),
-                    "探测请求失败，本轮不记录该账号也不改变其调度状态"
+                    error = %failure,
+                    "探测请求失败，写入失败留痕；不改变其调度状态"
                 );
+                self.detection
+                    .insert_detection_record(NewDetectionRecord {
+                        detection_round_id: round_id,
+                        account_id: target.account_id.clone(),
+                        degraded: false,
+                        html_content: None,
+                        reasoning_content: Some(failure),
+                        prompt_used: Some(prompt.to_owned()),
+                        matched_phrases: Vec::new(),
+                        suspension_released: false,
+                    })
+                    .await
+                    .map_err(store_error)?;
                 return Ok(None);
             }
         };
-        let matched = matched_phrases(&format!("{reasoning}{text}"));
+        let matched = matched_phrases(&format!("{reasoning}\0{text}"));
         let degraded = !matched.is_empty();
+        let reasoning_content = fallback_note
+            .map(|note| format!("[{note}]\n{reasoning}"))
+            .unwrap_or(reasoning);
         self.detection
             .insert_detection_record(NewDetectionRecord {
                 detection_round_id: round_id,
                 account_id: target.account_id.clone(),
                 degraded,
                 html_content: Some(extract_html_document(&text)),
-                reasoning_content: Some(reasoning),
+                reasoning_content: Some(reasoning_content),
                 prompt_used: Some(prompt.to_owned()),
                 matched_phrases: matched,
+                suspension_released: false,
             })
             .await
             .map_err(store_error)?;
         Ok(Some(degraded))
+    }
+
+    async fn execute_probe(
+        &self,
+        provider: &dyn ProviderAdmin,
+        account_id: &ProviderAccountId,
+        target: &DetectionTarget,
+        upstream_model: &UpstreamModelId,
+        prompt: &str,
+        reasoning_effort: &str,
+    ) -> Result<AccountProbeResult, DetectionProbeFailure> {
+        let operation = provider
+            .intelligence_detection_operation(upstream_model, prompt, reasoning_effort)
+            .map_err(DetectionProbeFailure::Build)?;
+        self.probe
+            .probe(AccountProbeRequest {
+                account_id: account_id.clone(),
+                provider_kind: target.provider_kind.clone(),
+                upstream_model: upstream_model.clone(),
+                operation,
+            })
+            .await
+            .map_err(DetectionProbeFailure::Request)
     }
 
     /// 按检测结论翻转调度暂停；恢复只针对检测来源的暂停，人工暂停不受影响。
@@ -320,6 +415,14 @@ impl IntelligenceDetectionTask {
             .set_scheduling_suspended(account_id, suspension, &context)
             .await
             .map_err(store_error)?;
+        if suspension.is_none()
+            && let Err(error) = self
+                .detection
+                .mark_suspension_released(round_id, &target.account_id)
+                .await
+        {
+            warn!(account = target.account_id, %round_id, error = %error, "标记检测恢复失败");
+        }
         if let Ok(provider) = self.providers.require(&target.provider_kind) {
             provider
                 .account_facts_changed(std::slice::from_ref(account_id))
@@ -360,6 +463,37 @@ fn is_within_interval(checked_at: DateTime<Utc>, interval: Duration) -> bool {
         || chrono::Duration::from_std(interval).is_ok_and(|limit| elapsed < limit)
 }
 
+/// 解析检测推理档位。显式配置原样优先；`auto` 从 catalog 声明中按稳定阶梯取顶，
+/// catalog 缺失或不含已知档位时退化到 `xhigh`。
+#[must_use]
+pub fn resolve_reasoning_effort(configured: &str, supported: &[String]) -> String {
+    let configured = configured.trim().to_ascii_lowercase();
+    if configured != "auto" {
+        return configured;
+    }
+    supported
+        .iter()
+        .filter_map(|effort| {
+            let effort = effort.trim().to_ascii_lowercase();
+            reasoning_effort_rank(&effort).map(|rank| (rank, effort))
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map_or_else(|| "xhigh".to_owned(), |(_, effort)| effort)
+}
+
+fn reasoning_effort_rank(effort: &str) -> Option<u8> {
+    match effort {
+        "none" => Some(0),
+        "minimal" => Some(1),
+        "low" => Some(2),
+        "medium" => Some(3),
+        "high" => Some(4),
+        "xhigh" => Some(5),
+        "max" => Some(6),
+        _ => None,
+    }
+}
+
 /// 为一轮检测生成可复现的提示词；同一轮所有账号共享这一提示词。
 #[must_use]
 pub fn prompt_for_round(round_id: Uuid) -> String {
@@ -374,25 +508,30 @@ pub fn prompt_for_round(round_id: Uuid) -> String {
 /// 写法；返回值使用规范化标签，便于审计记录说明命中原因。
 #[must_use]
 pub fn matched_phrases(text: &str) -> Vec<String> {
-    let normalized: String = text
+    let mut matched = Vec::new();
+    for segment in text.split('\0') {
+        for phrase in matched_phrases_in_segment(segment) {
+            if !matched.contains(&phrase) {
+                matched.push(phrase);
+            }
+        }
+    }
+    matched
+}
+
+fn matched_phrases_in_segment(text: &str) -> Vec<String> {
+    let normalized = text
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect::<String>()
         .to_ascii_lowercase();
-    let direct = [
-        "内嵌svg",
-        "内联svg",
-        "内嵌的svg",
-        "内联的svg",
-        "inlinesvg",
-        "svgandcss",
-    ];
+    let direct = ["内嵌svg", "内联svg", "内嵌的svg", "内联的svg", "inlinesvg"];
     let mut matched = direct
         .iter()
         .filter(|phrase| normalized.contains(**phrase))
         .map(|phrase| (*phrase).to_owned())
         .collect::<Vec<_>>();
-    for marker in ["内嵌", "内联"] {
+    for marker in ["内嵌", "内联", "inline", "embed"] {
         if !matched.iter().any(|phrase| phrase.starts_with(marker))
             && has_nearby_svg(&normalized, marker)
         {

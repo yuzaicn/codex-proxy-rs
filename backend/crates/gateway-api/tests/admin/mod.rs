@@ -1036,6 +1036,7 @@ impl ProviderAdmin for UnusedProvider {
         &self,
         _: &gateway_core::routing::UpstreamModelId,
         _: &str,
+        _: &str,
     ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
         Err(unsupported_provider())
     }

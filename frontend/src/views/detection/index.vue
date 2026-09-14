@@ -15,6 +15,7 @@ import { toast } from '@/components/base/BaseToast'
 import { errorMessage } from '@/utils/async'
 import { formatDateTime } from '@/utils/date'
 import AccountIdentityCell from '@/views/accounts/components/AccountIdentityCell.vue'
+import { normalizeMatchedPhrases } from './presentation'
 
 const rounds = ref<DetectionRound[]>([])
 const roundsLoading = ref(true)
@@ -53,6 +54,8 @@ const currentPrompt = computed(() => {
   const prompt = currentRecord.value?.prompt_used
   return prompt?.trim() ? prompt : null
 })
+
+const currentMatchedPhrases = computed(() => normalizeMatchedPhrases(currentRecord.value?.matched_phrases))
 
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
@@ -373,17 +376,27 @@ onBeforeUnmount(() => {
           :open="openRounds.has(round.detection_round_id)"
           @toggle="toggleRound(round, $event)"
         >
-          <summary class="flex cursor-pointer list-none items-center gap-3 bg-cp-bg-elevated px-5 py-4 outline-none transition-colors hover:bg-cp-fill-quaternary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cp-control-outline [&::-webkit-details-marker]:hidden">
+          <summary class="flex cursor-pointer list-none flex-wrap items-center gap-3 bg-cp-bg-elevated px-5 py-4 outline-none transition-colors hover:bg-cp-fill-quaternary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cp-control-outline [&::-webkit-details-marker]:hidden">
             <ChevronDown class="size-4 shrink-0 text-cp-text-secondary transition-transform duration-200 motion-reduce:transition-none group-open:rotate-180" />
-            <span class="min-w-0 flex-1 text-cp font-heavy text-cp-text">
+            <span class="min-w-40 flex-1 text-cp font-heavy text-cp-text">
               {{ formatDateTime(round.checked_at) }}
               <span v-if="index === 0" class="ml-2 text-cp-xs font-bold text-cp-text-tertiary">最新</span>
             </span>
-            <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold text-cp-error-on-container">
-              降智 {{ round.degraded_count }} 个
-            </span>
-            <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-success-container px-2 py-1 text-cp-xs font-bold text-cp-success-on-container">
-              正常 {{ round.normal_count }} 个
+            <!-- 徽标收进可换行分组：窄屏放不下时整组换行，保住时间戳的最小宽度不被挤没。 -->
+            <span class="ml-auto flex flex-wrap items-center justify-end gap-3">
+              <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold text-cp-error-on-container">
+                降智 {{ round.degraded_count }} 个
+              </span>
+              <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-success-container px-2 py-1 text-cp-xs font-bold text-cp-success-on-container">
+                正常 {{ round.normal_count }} 个
+              </span>
+              <!-- 恢复=从坏变好的动作，取 info 档语义色区别于 error/success；null/缺失是「未知」不渲染，0 是明确事实照常显示。 -->
+              <span
+                v-if="round.recovered_count != null"
+                class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-info-container px-2 py-1 text-cp-xs font-bold text-cp-info-on-container"
+              >
+                恢复 {{ round.recovered_count }} 个
+              </span>
             </span>
           </summary>
 
@@ -506,6 +519,23 @@ onBeforeUnmount(() => {
             class="mt-2 mb-0 whitespace-pre-wrap wrap-break-word font-mono text-cp-sm leading-[1.65] text-cp-text"
             v-text="currentPrompt"
           />
+        </div>
+        <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+          <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+            命中判词
+          </p>
+          <div v-if="currentMatchedPhrases.length > 0" class="mt-2 flex flex-wrap gap-1.5">
+            <span
+              v-for="phrase in currentMatchedPhrases"
+              :key="phrase"
+              class="inline-flex max-w-full rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold wrap-break-word text-cp-error-on-container"
+            >
+              {{ phrase }}
+            </span>
+          </div>
+          <p v-else class="mt-2 mb-0 text-cp-sm font-emphasis text-cp-text-quaternary">
+            {{ currentRecord.degraded ? '该记录未保存命中判词' : '未命中判词' }}
+          </p>
         </div>
         <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
           <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">

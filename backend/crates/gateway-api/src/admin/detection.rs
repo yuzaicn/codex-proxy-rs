@@ -65,6 +65,7 @@ pub struct DetectionConfigView {
     pub account_scope: DetectionScopeWire,
     pub interval_secs: u32,
     pub model: String,
+    pub reasoning_effort: String,
 }
 
 impl From<DetectionConfig> for DetectionConfigView {
@@ -74,6 +75,7 @@ impl From<DetectionConfig> for DetectionConfigView {
             account_scope: config.account_scope.into(),
             interval_secs: config.interval_secs,
             model: config.model,
+            reasoning_effort: config.reasoning_effort,
         }
     }
 }
@@ -86,6 +88,7 @@ pub struct UpdateDetectionConfigRequest {
     pub account_scope: DetectionScopeWire,
     pub interval_secs: u32,
     pub model: String,
+    pub reasoning_effort: String,
 }
 
 impl UpdateDetectionConfigRequest {
@@ -95,6 +98,7 @@ impl UpdateDetectionConfigRequest {
             account_scope: self.account_scope.into_domain()?,
             interval_secs: self.interval_secs,
             model: self.model,
+            reasoning_effort: self.reasoning_effort,
         })
     }
 }
@@ -172,6 +176,7 @@ pub struct DetectionRecordView {
     pub scheduling_suspended: bool,
     pub reasoning_content: Option<String>,
     pub prompt_used: Option<String>,
+    pub matched_phrases: Vec<String>,
 }
 
 impl From<DetectionRecord> for DetectionRecordView {
@@ -189,6 +194,7 @@ impl From<DetectionRecord> for DetectionRecordView {
             scheduling_suspended: record.scheduling_suspended,
             reasoning_content: record.reasoning_content,
             prompt_used: record.prompt_used,
+            matched_phrases: record.matched_phrases,
         }
     }
 }
@@ -200,6 +206,7 @@ pub struct DetectionRoundView {
     pub checked_at: DateTime<Utc>,
     pub degraded_count: u64,
     pub normal_count: u64,
+    pub recovered_count: Option<u64>,
 }
 
 impl From<DetectionRound> for DetectionRoundView {
@@ -209,6 +216,7 @@ impl From<DetectionRound> for DetectionRoundView {
             checked_at: round.checked_at,
             degraded_count: round.degraded_count,
             normal_count: round.normal_count,
+            recovered_count: round.recovered_count,
         }
     }
 }
