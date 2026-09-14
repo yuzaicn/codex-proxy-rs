@@ -312,6 +312,8 @@ impl CodexCredentialRefreshService {
                 }
                 RefreshFailure::InvalidGrant { .. }
                 | RefreshFailure::RetryableTransport { .. }
+                | RefreshFailure::UpstreamRateLimited { .. }
+                | RefreshFailure::UpstreamUnavailable { .. }
                 | RefreshFailure::Transport { .. } => {
                     self.persist_terminal(
                         &due.account,
@@ -364,8 +366,40 @@ impl CodexCredentialRefreshService {
                     Ok(CodexCredentialRefreshOutcome::Stale { account_id })
                 }
             }
+            Err(RefreshFailure::UpstreamRateLimited {
+                message, upstream, ..
+            }) => {
+                if self
+                    .defer_refresh(
+                        &due.account,
+                        "upstream-rate-limited",
+                        message.as_deref(),
+                        upstream.as_deref(),
+                    )
+                    .await?
+                {
+                    Ok(CodexCredentialRefreshOutcome::Transient { account_id })
+                } else {
+                    Ok(CodexCredentialRefreshOutcome::Stale { account_id })
+                }
+            }
+            Err(RefreshFailure::UpstreamUnavailable { message, upstream }) => {
+                if self
+                    .defer_refresh(
+                        &due.account,
+                        "upstream-unavailable",
+                        message.as_deref(),
+                        upstream.as_deref(),
+                    )
+                    .await?
+                {
+                    Ok(CodexCredentialRefreshOutcome::Transient { account_id })
+                } else {
+                    Ok(CodexCredentialRefreshOutcome::Stale { account_id })
+                }
+            }
             Err(RefreshFailure::Transport { message, upstream }) => {
-                // 上游瞬态（401/429/5xx/超时/畸形响应等）保留现有凭据、
+                // 结果不明确（401/超时/畸形响应等）时保留现有凭据、
                 // 记录最近一次失败并推进有界退避。
                 if self
                     .defer_refresh(

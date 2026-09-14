@@ -477,8 +477,10 @@ const fn admin_error_kind(kind: AdminErrorKind) -> &'static str {
         AdminErrorKind::NotFound => "not_found",
         AdminErrorKind::Conflict => "conflict",
         AdminErrorKind::RateLimited => "rate_limited",
+        AdminErrorKind::UpstreamRateLimited => "upstream_rate_limited",
         AdminErrorKind::BadGateway => "bad_gateway",
         AdminErrorKind::UpstreamResultUnknown => "upstream_result_unknown",
+        AdminErrorKind::UpstreamUnavailable => "upstream_unavailable",
         AdminErrorKind::Unavailable => "unavailable",
         AdminErrorKind::Internal => "internal",
     }

@@ -1,6 +1,9 @@
 //! 管理控制面使用的 Command、Result 与稳定值对象。
 
-use std::num::{NonZeroU16, NonZeroU64};
+use std::{
+    num::{NonZeroU16, NonZeroU64},
+    time::Duration,
+};
 
 pub mod account_groups;
 pub mod accounts;
@@ -24,8 +27,10 @@ pub enum AdminErrorKind {
     NotFound,
     Conflict,
     RateLimited,
+    UpstreamRateLimited,
     BadGateway,
     UpstreamResultUnknown,
+    UpstreamUnavailable,
     Unavailable,
     Internal,
 }
@@ -36,6 +41,7 @@ pub enum AdminErrorKind {
 pub struct AdminError {
     kind: AdminErrorKind,
     message: String,
+    retry_after: Option<Duration>,
 }
 
 impl AdminError {
@@ -44,6 +50,7 @@ impl AdminError {
         Self {
             kind,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -56,6 +63,17 @@ impl AdminError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    #[must_use]
+    pub const fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 
     #[must_use]

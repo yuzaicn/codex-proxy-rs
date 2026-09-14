@@ -1,6 +1,7 @@
 use std::{
+    io::{self, Write},
     num::NonZeroU32,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -21,6 +22,129 @@ use wiremock::{
 use crate::support::{TestLeaseCoordinator, runtime_policy};
 
 struct UnusedRefresher;
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn json_events(&self) -> Vec<serde_json::Value> {
+        let bytes = self.0.lock().expect("captured logs lock").clone();
+        String::from_utf8(bytes)
+            .expect("captured logs are UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("captured log is JSON"))
+            .collect()
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedLogs {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl Write for CapturedLogs {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("captured logs lock poisoned"))?
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or_body() {
+    let server = MockServer::start().await;
+    let response_body_marker = "oauth-response-body-secret-marker";
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "27")
+                .set_body_string(format!(
+                    r#"{{"error":{{"message":"{response_body_marker}","type":"rate_limit_error","code":"rate_limit_exceeded"}}}}"#
+                )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let refresher = openai_token_client(
+        TokenClientConfig {
+            client_id: "test-public-client".to_owned(),
+            token_endpoint: format!("{}/oauth/token", server.uri()),
+        },
+        provider_openai::OpenAiConfig::default().wire_profile_state(),
+    )
+    .expect("auth client");
+    let service = CodexCredentialAdminService::new(
+        Arc::new(refresher),
+        Arc::new(TestLeaseCoordinator::default()),
+        runtime_policy(),
+    );
+    let captured = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_ansi(false)
+        .with_writer(captured.clone())
+        .finish();
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let refresh_token_marker = "refresh-import-secret-marker";
+
+    let error = service
+        .prepare_import_document(serde_json::json!({"refreshToken": refresh_token_marker}))
+        .await
+        .expect_err("rate-limited import must fail");
+
+    assert!(matches!(
+        error,
+        provider_openai::credential::CodexCredentialAdminError::RefreshRateLimited {
+            retry_after: Some(retry_after)
+        } if retry_after == Duration::from_secs(27)
+    ));
+    let events = captured.json_events();
+    let fields = events
+        .iter()
+        .find_map(|event| {
+            let fields = event.get("fields")?.as_object()?;
+            (fields.get("message").and_then(serde_json::Value::as_str)
+                == Some("OpenAI OAuth import refresh failed"))
+            .then_some(fields)
+        })
+        .expect("structured import refresh warning");
+    assert!(
+        fields
+            .get("account_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.starts_with("acct_"))
+    );
+    assert_eq!(
+        fields
+            .get("failure_class")
+            .and_then(serde_json::Value::as_str),
+        Some("upstream-rate-limited")
+    );
+    assert!(fields["upstream_status"].to_string().contains("429"));
+    assert!(
+        fields["upstream_code"]
+            .to_string()
+            .contains("rate_limit_exceeded")
+    );
+    assert!(
+        fields["upstream_type"]
+            .to_string()
+            .contains("rate_limit_error")
+    );
+    let serialized_event = serde_json::to_string(fields).expect("serialize captured fields");
+    assert!(!serialized_event.contains(refresh_token_marker));
+    assert!(!serialized_event.contains(response_body_marker));
+}
 
 #[tokio::test]
 async fn sub2api_import_resolves_distinct_proxy_bindings_and_encodes_credentials() {
