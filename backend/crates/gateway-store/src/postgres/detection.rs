@@ -253,7 +253,7 @@ impl PgDetectionStore {
     }
 
     async fn mark_released(&self, round_id: Uuid, account_id: &str) -> StoreResult<()> {
-        sqlx::query("update intelligence_detection_records set suspension_released = true where detection_round_id = $1 and account_id = $2")
+        sqlx::query("update intelligence_detection_records set suspension_released = true where detection_round_id = $1::uuid and account_id = $2")
             .bind(round_id.to_string()).bind(account_id).execute(&self.pool).await
             .map_err(|_| postgres_unavailable("mark suspension released"))?;
         Ok(())
