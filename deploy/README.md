@@ -361,7 +361,7 @@ docker compose -f deploy/compose.yaml build codex-proxy-rs
 
 Compose 已显式装配正式发布构建所需的运行参数：
 
-- `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；默认 `zyycn/codex-proxy-rs`。
+- `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；默认 `yuzaicn/codex-proxy-rs`。
 - `CPR_GITHUB_API_BASE`：正式环境必须为 `https://api.github.com/repos`。
 - `CPR_UPDATE_CHANNEL`：`stable` 会拒绝 prerelease。
 - `CPR_UPDATE_EXE_PATH`、`CPR_WEB_DIST_DIR`：分别指向容器内二进制和前端静态目录。

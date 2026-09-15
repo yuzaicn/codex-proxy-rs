@@ -23,6 +23,16 @@ use crate::support::{TestLeaseCoordinator, runtime_policy};
 
 struct UnusedRefresher;
 
+#[derive(Clone)]
+struct FixedFailureRefresher(RefreshFailure);
+
+#[async_trait]
+impl TokenRefresher for FixedFailureRefresher {
+    async fn refresh(&self, _refresh_token: &str) -> Result<TokenPair, RefreshFailure> {
+        Err(self.0.clone())
+    }
+}
+
 #[derive(Clone, Default)]
 struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
 
@@ -144,6 +154,91 @@ async fn refresh_token_import_logs_structured_upstream_fields_without_secrets_or
     let serialized_event = serde_json::to_string(fields).expect("serialize captured fields");
     assert!(!serialized_event.contains(refresh_token_marker));
     assert!(!serialized_event.contains(response_body_marker));
+}
+
+#[tokio::test]
+async fn refresh_upstream_import_failure_preserves_status_retryability_contract() {
+    for (status, expected_retryable, expected_message, specialized_classification) in [
+        (401, false, "上游拒绝了令牌刷新，请检查账号授权状态", None),
+        (403, false, "上游拒绝了令牌刷新，请检查账号授权状态", None),
+        (
+            429,
+            true,
+            "上游服务异常，请稍后重试",
+            Some("upstream-rate-limited"),
+        ),
+        (
+            503,
+            true,
+            "上游服务异常，请稍后重试",
+            Some("upstream-unavailable"),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                    "error": {
+                        "message": "generic upstream rejection",
+                        "type": "generic_error",
+                        "code": "generic_failure"
+                    }
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let refresher = openai_token_client(
+            TokenClientConfig {
+                client_id: "test-public-client".to_owned(),
+                token_endpoint: format!("{}/oauth/token", server.uri()),
+            },
+            provider_openai::OpenAiConfig::default().wire_profile_state(),
+        )
+        .expect("auth client");
+        let refresher: Arc<dyn TokenRefresher> = if let Some(expected_classification) =
+            specialized_classification
+        {
+            let classified = refresher
+                .refresh("refresh-probe")
+                .await
+                .expect_err("non-success response must fail refresh");
+            assert_eq!(classified.classification(), expected_classification);
+            let (message, upstream) = match classified {
+                RefreshFailure::UpstreamRateLimited {
+                    message, upstream, ..
+                }
+                | RefreshFailure::UpstreamUnavailable { message, upstream } => (message, upstream),
+                other => panic!("unexpected specialized refresh failure: {other:?}"),
+            };
+            // 生产 token client 会先把 429/5xx 分类为专用变体；端口替身把同一完整
+            // 上游事实送入 Transport，以回归保护 Admin 层保留的防御性状态判定。
+            Arc::new(FixedFailureRefresher(RefreshFailure::Transport {
+                message,
+                upstream,
+            }))
+        } else {
+            Arc::new(refresher)
+        };
+        let service = CodexCredentialAdminService::new(
+            refresher,
+            Arc::new(TestLeaseCoordinator::default()),
+            runtime_policy(),
+        );
+
+        let prepared = service
+            .prepare_import_document(serde_json::json!({"refreshToken": "refresh-import-secret"}))
+            .await
+            .expect("refresh rejection must be isolated to the failed item");
+
+        assert!(prepared.accounts().is_empty(), "status {status}");
+        assert_eq!(prepared.failures().len(), 1, "status {status}");
+        let failure = &prepared.failures()[0];
+        assert_eq!(failure.code, "refresh_upstream_failed", "status {status}");
+        assert_eq!(failure.retryable, expected_retryable, "status {status}");
+        assert_eq!(failure.message, expected_message, "status {status}");
+    }
 }
 
 struct MixedRefresher;
