@@ -144,6 +144,102 @@ describe('importTokenRow 自动重试判定', () => {
   })
 })
 
+describe('sub2api 导出解析', () => {
+  it('cliProxyAPI codex 单文件可直接识别，proxy_url 归一化且展示身份', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      type: 'codex',
+      access_token: 'at-codex',
+      refresh_token: 'rt-codex',
+      id_token: 'e30.eyJzdWIiOiIxIn0.sig',
+      email: 'codex@example.test',
+      account_id: 'acct-codex',
+      proxy_url: 'http://proxy.test:8080',
+    }))
+    expect(rows[0]).toMatchObject({ kind: 'at', status: 'pending', email: 'codex@example.test', accountId: 'acct-codex', proxyUrl: 'http://proxy.test:8080' })
+    expect(rows[0].entry).toMatchObject({ outbound_proxy_url: 'http://proxy.test:8080' })
+  })
+
+  it('导入 CLIProxyAPI 行时发送 outbound_proxy_url', async () => {
+    importAccountsMock.mockResolvedValue(successResponse())
+    const onboarding = setup(JSON.stringify({ type: 'codex', access_token: 'at-proxy', proxy_url: 'socks5://proxy.test:1080' }))
+    await onboarding.handleCreate()
+    expect(importAccountsMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: { accounts: [expect.objectContaining({ outbound_proxy_url: 'socks5://proxy.test:1080' })] },
+    }))
+  })
+
+  it('cliProxyAPI gemini/claude/antigravity 类型被拦截', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify([
+      { type: 'gemini', access_token: 'at-gemini' },
+      { type: 'claude', access_token: 'at-claude' },
+      { type: 'antigravity', access_token: 'at-antigravity' },
+    ]))
+    expect(rows.map(row => row.error)).toEqual([
+      'CLIProxyAPI gemini 凭据，无法导入',
+      'CLIProxyAPI claude 凭据，无法导入',
+      'CLIProxyAPI antigravity 凭据，无法导入',
+    ])
+    expect(rows.every(row => row.kind === 'unsupported' && row.status === 'needs_action')).toBe(true)
+  })
+
+  it('连续裸对象与数组均可拆分为多行', () => {
+    const objectText = '{"type":"codex","access_token":"at-one"}\n{"type":"codex","access_token":"at-two"}'
+    expect(parseOpenAiTokenRows(objectText).map(row => row.credential)).toEqual(['at-one', 'at-two'])
+    expect(parseOpenAiTokenRows('[{"type":"codex","access_token":"at-three"},{"type":"codex","access_token":"at-four"}]')).toHaveLength(2)
+  })
+
+  it('从 credentials 提取 OAuth 凭据，保留 name/email 与匹配的 proxy', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      type: 'sub2api-data',
+      proxies: [{ proxy_key: 'proxy-a', protocol: 'socks5', host: 'proxy.test', port: 1080 }],
+      accounts: [{
+        name: '账号一',
+        platform: 'openai',
+        proxy_key: 'proxy-a',
+        credentials: { access_token: 'at-sub2api', email: 'one@example.test' },
+      }],
+    }))
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      credential: 'at-sub2api',
+      kind: 'at',
+      name: '账号一',
+      email: 'one@example.test',
+      status: 'pending',
+      proxies: [{ proxy_key: 'proxy-a' }],
+    })
+  })
+
+  it('标记非 OpenAI、API Key、缺凭据与缺代理的行并给出原因', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [],
+      accounts: [
+        { platform: 'anthropic', credentials: { access_token: 'ignored' } },
+        { platform: 'openai', credentials: { api_key: 'sk-test' } },
+        { platform: 'openai', name: 'empty' },
+        { platform: 'openai', proxy_key: 'missing', credentials: { refresh_token: 'rt-sub2api' } },
+      ],
+    }))
+
+    expect(rows.map(row => row.error)).toEqual([
+      '非 OpenAI 平台，无法导入',
+      'API Key 不是 OAuth 凭据',
+      '既无 Access Token 也无 Refresh Token',
+      '找不到 proxy_key 对应的代理，无法导入',
+    ])
+    expect(rows.every(row => row.status === 'needs_action' && row.kind === 'unsupported')).toBe(true)
+  })
+
+  it('保持 200 行截断与重复凭据判定', () => {
+    const entries = Array.from({ length: 201 }, (_, index) => ({ access_token: `at-${index}` }))
+    const rows = parseOpenAiTokenRows(JSON.stringify({ accounts: [...entries, { access_token: 'at-0' }] }))
+    expect(rows).toHaveLength(200)
+    expect(rows[0].status).toBe('pending')
+    expect(rows.filter(row => row.status === 'duplicate')).toHaveLength(0)
+  })
+})
+
 describe('手动重试入口', () => {
   beforeEach(() => {
     vi.useFakeTimers()
