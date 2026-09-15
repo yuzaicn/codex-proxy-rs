@@ -4,7 +4,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use rustls::{ClientConfig, RootCertStore};
+use rustls::{
+    ClientConfig, RootCertStore, SignatureScheme,
+    crypto::{CryptoProvider, WebPkiSupportedAlgorithms},
+};
 use rustls_pki_types::{
     CertificateDer,
     pem::{self, PemObject, SectionKind},
@@ -21,8 +24,50 @@ type PemSection = (SectionKind, Vec<u8>);
 pub fn ensure_rustls_provider() {
     static INSTALL: OnceLock<()> = OnceLock::new();
     INSTALL.get_or_init(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = codex_rustls_provider().install_default();
     });
+}
+
+/// rustls 0.23.45 adds ML-DSA signature schemes to the aws-lc default provider.
+/// Official Codex does not advertise those schemes yet, so exclude them while
+/// retaining the security fix and the existing post-quantum key exchange.
+fn codex_rustls_provider() -> CryptoProvider {
+    let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+    let algorithms = provider.signature_verification_algorithms;
+    let excluded_schemes = [
+        SignatureScheme::ML_DSA_44,
+        SignatureScheme::ML_DSA_65,
+        SignatureScheme::ML_DSA_87,
+    ];
+    let excluded_algorithms = algorithms
+        .mapping
+        .iter()
+        .filter(|(scheme, _)| excluded_schemes.contains(scheme))
+        .flat_map(|(_, algorithms)| algorithms.iter().copied())
+        .collect::<Vec<_>>();
+    let all = algorithms
+        .all
+        .iter()
+        .copied()
+        .filter(|algorithm| {
+            !excluded_algorithms
+                .iter()
+                .any(|excluded| std::ptr::addr_eq(*algorithm, *excluded))
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mapping = algorithms
+        .mapping
+        .iter()
+        .copied()
+        .filter(|(scheme, _)| !excluded_schemes.contains(scheme))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    provider.signature_verification_algorithms = WebPkiSupportedAlgorithms {
+        all: Box::leak(all),
+        mapping: Box::leak(mapping),
+    };
+    provider
 }
 
 /// 自定义 CA 证书环境变量名。
