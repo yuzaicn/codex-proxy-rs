@@ -118,7 +118,13 @@ function updateKind(row: TokenImportRow, event: Event) {
     </p>
     <template v-if="rows">
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-cp-border bg-cp-bg-muted px-3 py-2 text-xs text-cp-text-secondary">
-        <span v-if="summary">待导入 {{ summary.pending }} · 成功 {{ summary.success }} · 失败 {{ summary.failed }} · 还需要你处理 {{ summary.actionNeeded }} 行</span>
+        <span v-if="summary">
+          待导入 {{ summary.pending }} · 成功 {{ summary.success }}
+          <template v-if="summary.created || summary.updated">
+            （新增 {{ summary.created }} · 更新 {{ summary.updated }}<template v-if="summary.imported"> · 已导入 {{ summary.imported }}</template>）
+          </template>
+          · 失败 {{ summary.failed }} · 还需要你处理 {{ summary.actionNeeded }} 行
+        </span>
         <div class="flex flex-wrap gap-2">
           <BaseButton v-if="rows.some(row => row.kind === 'unknown')" size="sm" variant="secondary" :disabled="disabled" @click="emit('setUnknownKind', 'rt')">
             未识别设为 RT

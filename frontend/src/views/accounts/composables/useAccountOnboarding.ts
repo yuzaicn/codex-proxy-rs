@@ -29,6 +29,7 @@ export const TOKEN_IMPORT_CONCURRENCY = 4
 
 export type TokenImportKind = 'at' | 'rt' | 'unknown' | 'unsupported'
 export type TokenImportStatus = 'pending' | 'importing' | 'success' | 'failed' | 'needs_action' | 'duplicate'
+export type TokenImportOutcome = 'created' | 'updated' | 'imported'
 export interface TokenImportRow {
   id: string
   index: number
@@ -40,6 +41,8 @@ export interface TokenImportRow {
   error: string
   retryAttempt: number
   entry: Record<string, unknown> | null
+  outcome: TokenImportOutcome | null
+  accountId: string
 }
 
 // 汇总条与完成提示共用的口径：失败=自动重试耗尽或风险桶（结果未知）单次失败，均可手动重试；还需要你处理=需要处理/未识别/重复。
@@ -47,6 +50,9 @@ export function tokenImportSummary(rows: TokenImportRow[]) {
   return {
     pending: rows.filter(row => row.status === 'pending').length,
     success: rows.filter(row => row.status === 'success').length,
+    created: rows.filter(row => row.status === 'success' && row.outcome === 'created').length,
+    updated: rows.filter(row => row.status === 'success' && row.outcome === 'updated').length,
+    imported: rows.filter(row => row.status === 'success' && row.outcome === 'imported').length,
     failed: rows.filter(row => row.status === 'failed').length,
     needsAction: rows.filter(row => row.status === 'needs_action').length,
     actionNeeded: rows.filter(row => row.status === 'needs_action' || row.status === 'duplicate' || row.kind === 'unknown').length,
@@ -55,6 +61,7 @@ export function tokenImportSummary(rows: TokenImportRow[]) {
 
 export function useAccountOnboarding(options: {
   reload: () => Promise<unknown>
+  accountById?: (accountId: string) => Pick<AccountRow, 'email' | 'name'> | undefined
 }) {
   const createModalOpen = shallowRef(false)
   const reauthorizingAccount = shallowRef<AccountRow | null>(null)
@@ -247,9 +254,10 @@ export function useAccountOnboarding(options: {
       throw new Error('没有可导入的凭据')
     await runTokenImport(candidates)
     await options.reload()
+    hydrateTokenImportResults(candidates)
     const summary = tokenImportSummary(rows)
     if (summary.failed > 0 || summary.needsAction > 0) {
-      const parts = [`已导入 ${summary.success} 个账号`]
+      const parts = [tokenImportSuccessMessage(summary)]
       if (summary.failed > 0)
         parts.push(`失败 ${summary.failed} 行`)
       if (summary.actionNeeded > 0)
@@ -257,7 +265,7 @@ export function useAccountOnboarding(options: {
       return parts.join('，')
     }
     showCreateModal.value = false
-    return `已导入 ${summary.success} 个账号`
+    return tokenImportSuccessMessage(summary)
   }
 
   function appendTokenText(value: string) {
@@ -326,6 +334,9 @@ export function useAccountOnboarding(options: {
 
   async function importTokenRow(row: TokenImportRow) {
     row.error = ''
+    row.result = ''
+    row.outcome = null
+    row.accountId = ''
     row.retryAttempt = 0
     for (let attempt = 0; attempt <= 3; attempt++) {
       row.status = 'importing'
@@ -348,7 +359,9 @@ export function useAccountOnboarding(options: {
         }
         else if (result.importedCount > 0) {
           row.status = 'success'
-          row.result = '已导入'
+          row.outcome = importOutcome(result)
+          row.accountId = result.accountIds[0] || ''
+          row.result = tokenImportOutcomeLabel(row.outcome)
         }
         else {
           row.status = 'failed'
@@ -377,7 +390,8 @@ export function useAccountOnboarding(options: {
       await runTokenImport([row])
       if (row.status === 'success') {
         await options.reload()
-        toast.success('凭据已导入')
+        hydrateTokenImportResults([row])
+        toast.success(tokenImportSuccessMessage(tokenImportSummary([row])))
       }
     }, { errorText: '重试失败' })
   }
@@ -388,9 +402,11 @@ export function useAccountOnboarding(options: {
     await creatingAccountAction.run(async () => {
       await runTokenImport(tokenRows.value.filter(row => row.status === 'failed' || row.status === 'needs_action'))
       await options.reload()
+      hydrateTokenImportResults(tokenRows.value)
       if (tokenRows.value.every(row => row.status !== 'failed' && row.status !== 'needs_action')) {
+        const message = tokenImportSuccessMessage(tokenImportSummary(tokenRows.value))
         showCreateModal.value = false
-        toast.success('失败项已全部导入')
+        toast.success(message)
       }
     }, { errorText: '重试失败项失败' })
   }
@@ -441,6 +457,17 @@ export function useAccountOnboarding(options: {
     showCreateModal.value = false
     await options.reload()
     toast.success(message)
+  }
+
+  function hydrateTokenImportResults(rows: TokenImportRow[]) {
+    for (const row of rows) {
+      if (row.status !== 'success' || !row.outcome)
+        continue
+      const account = row.accountId ? options.accountById?.(row.accountId) : undefined
+      const identity = account?.email?.trim() || account?.name.trim()
+      const outcome = tokenImportOutcomeLabel(row.outcome)
+      row.result = identity ? `${outcome} · ${identity}` : outcome
+    }
   }
 
   watch(
@@ -539,6 +566,33 @@ function importResponseFailure(result: { failures?: Array<{ code: string, retrya
   return failure
 }
 
+function importOutcome(result: { createdCount?: number, updatedCount?: number }): TokenImportOutcome {
+  if (result.createdCount === 1)
+    return 'created'
+  if (result.updatedCount === 1)
+    return 'updated'
+  return 'imported'
+}
+
+function tokenImportOutcomeLabel(outcome: TokenImportOutcome) {
+  if (outcome === 'created')
+    return '新增'
+  if (outcome === 'updated')
+    return '更新'
+  return '已导入'
+}
+
+function tokenImportSuccessMessage(summary: ReturnType<typeof tokenImportSummary>) {
+  const parts: string[] = []
+  if (summary.created > 0 || summary.updated > 0) {
+    parts.push(`新增 ${summary.created} 个`)
+    parts.push(`更新 ${summary.updated} 个`)
+  }
+  if (summary.imported > 0)
+    parts.push(`已导入 ${summary.imported} 个`)
+  return parts.length > 0 ? parts.join('，') : `已导入 ${summary.success} 个`
+}
+
 // 风险桶：真 ambiguous —— 上游可能已消费该凭据但结果未送达（50202），或本地拿不到请求结果
 // （超时 / 断网 / 408 / status 0）。自动重放同一 Refresh Token 会撞 refresh_token_reused 导致永久失效，
 // 因此这类错误只允许用户手动重试。40901 不在此桶：conflict 语义下同账号更新基本成立。
@@ -622,6 +676,8 @@ function createTokenImportRow(
     entry: obj || (credential && (kind === 'at' || kind === 'rt')
       ? { [kind === 'rt' ? 'refreshToken' : 'accessToken']: credential }
       : null),
+    outcome: null,
+    accountId: '',
   }
 }
 
