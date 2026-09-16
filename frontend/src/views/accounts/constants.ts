@@ -61,7 +61,7 @@ export const accountColumns = defineTableColumns<AccountRow>([
   { key: 'groups', label: '账号分组', kind: 'status', minWidth: 64 },
   {
     key: 'lastUsedAt',
-    label: '时间',
+    label: '最后使用',
     kind: 'datetime',
     size: 'xl',
     minWidth: 132,
