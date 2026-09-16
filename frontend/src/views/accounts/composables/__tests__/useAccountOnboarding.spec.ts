@@ -191,7 +191,7 @@ describe('sub2api 导出解析', () => {
   it('从 credentials 提取 OAuth 凭据，保留 name/email 与匹配的 proxy', () => {
     const rows = parseOpenAiTokenRows(JSON.stringify({
       type: 'sub2api-data',
-      proxies: [{ proxy_key: 'proxy-a', protocol: 'socks5', host: 'proxy.test', port: 1080 }],
+      proxies: [{ proxy_key: 'proxy-a', protocol: 'socks5', host: 'proxy.test', port: 1080, status: 'active' }],
       accounts: [{
         name: '账号一',
         platform: 'openai',
@@ -227,6 +227,39 @@ describe('sub2api 导出解析', () => {
       'API Key 不是 OAuth 凭据',
       '既无 Access Token 也无 Refresh Token',
       '找不到 proxy_key 对应的代理，无法导入',
+    ])
+    expect(rows.every(row => row.status === 'needs_action' && row.kind === 'unsupported')).toBe(true)
+  })
+
+  it('保留非 OpenAI 平台的真实原因，不被 proxy_key 错误覆盖', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [{ proxy_key: 'proxy-k', status: 'active' }],
+      accounts: [{ platform: 'anthropic', proxy_key: 'proxy-k', credentials: { access_token: 'at-anthropic' } }],
+    }))
+
+    expect(rows[0]).toMatchObject({
+      kind: 'unsupported',
+      status: 'needs_action',
+      error: '非 OpenAI 平台，无法导入',
+    })
+  })
+
+  it('代理 key 重复或状态非 active 时在解析期标记明确原因', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [
+        { proxy_key: 'duplicate', status: 'active' },
+        { proxy_key: 'duplicate', status: 'active' },
+        { proxy_key: 'inactive', status: 'inactive' },
+      ],
+      accounts: [
+        { platform: 'openai', proxy_key: 'duplicate', credentials: { access_token: 'at-duplicate' } },
+        { platform: 'openai', proxy_key: 'inactive', credentials: { access_token: 'at-inactive' } },
+      ],
+    }))
+
+    expect(rows.map(row => row.error)).toEqual([
+      'proxy_key 对应的代理不唯一，无法导入',
+      'proxy_key 对应的代理不可用，无法导入',
     ])
     expect(rows.every(row => row.status === 'needs_action' && row.kind === 'unsupported')).toBe(true)
   })
@@ -280,6 +313,31 @@ describe('手动重试入口', () => {
     expect(importAccountsMock).toHaveBeenCalledTimes(2)
     expect(rows).toHaveLength(2)
     expect(rows.every(row => row.status === 'success')).toBe(true)
+  })
+
+  it('retryFailedImports 不重试解析期判死的 proxy_key 行', async () => {
+    importAccountsMock.mockRejectedValue(new ApiError('请求超时，请稍后重试', 0, undefined, undefined, 'timeout'))
+    const onboarding = setup(JSON.stringify({
+      proxies: [],
+      accounts: [
+        { platform: 'openai', proxy_key: 'missing', credentials: { refresh_token: 'rt-missing-proxy' } },
+        { platform: 'openai', credentials: { refresh_token: 'rt-retryable' } },
+      ],
+    }))
+    const rows = [...onboarding.tokenRows.value]
+    await runImport(onboarding.handleCreate())
+
+    expect(rows[0]).toMatchObject({ status: 'needs_action', error: '找不到 proxy_key 对应的代理，无法导入' })
+    expect(rows[1].status).toBe('failed')
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+
+    importAccountsMock.mockReset()
+    importAccountsMock.mockResolvedValue(successResponse())
+    await runImport(onboarding.retryFailedImports())
+
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+    expect(rows[0].status).toBe('needs_action')
+    expect(rows[1].status).toBe('success')
   })
 })
 

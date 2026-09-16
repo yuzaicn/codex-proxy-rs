@@ -253,7 +253,7 @@ export function useAccountOnboarding(options: {
     if (rows.length === 0)
       throw new Error('请至少粘贴一个凭据')
     const candidates = rows.filter(row => row.status === 'pending' || row.status === 'failed' || row.status === 'needs_action')
-      .filter(row => row.entry && row.kind !== 'unknown' && row.kind !== 'unsupported' && row.status !== 'duplicate')
+      .filter(isImportableTokenRow)
     if (candidates.length === 0)
       throw new Error('没有可导入的凭据')
     await runTokenImport(candidates)
@@ -391,7 +391,7 @@ export function useAccountOnboarding(options: {
 
   async function retryImportRow(id: string) {
     const row = tokenRows.value.find(item => item.id === id)
-    if (!row || !['failed', 'needs_action'].includes(row.status) || creatingAccount.value)
+    if (!row || !['failed', 'needs_action'].includes(row.status) || !isImportableTokenRow(row) || creatingAccount.value)
       return
     await creatingAccountAction.run(async () => {
       await runTokenImport([row])
@@ -406,8 +406,13 @@ export function useAccountOnboarding(options: {
   async function retryFailedImports() {
     if (creatingAccount.value)
       return
+    const candidates = tokenRows.value
+      .filter(row => row.status === 'failed' || row.status === 'needs_action')
+      .filter(isImportableTokenRow)
+    if (candidates.length === 0)
+      return
     await creatingAccountAction.run(async () => {
-      await runTokenImport(tokenRows.value.filter(row => row.status === 'failed' || row.status === 'needs_action'))
+      await runTokenImport(candidates)
       await options.reload()
       hydrateTokenImportResults(tokenRows.value)
       if (tokenRows.value.every(row => row.status !== 'failed' && row.status !== 'needs_action')) {
@@ -664,6 +669,10 @@ function parseOpenAiTokenEntries(value: string): Array<{ raw: string, value: unk
 
 interface ParsedTokenEntry { raw: string, value: unknown, proxies?: Record<string, unknown>[] }
 
+function isImportableTokenRow(row: TokenImportRow) {
+  return Boolean(row.entry) && row.kind !== 'unknown' && row.kind !== 'unsupported' && row.status !== 'duplicate'
+}
+
 function createTokenImportRow(
   item: ParsedTokenEntry,
   index: number,
@@ -674,9 +683,12 @@ function createTokenImportRow(
   const credential = normalized ? credentialFromObject(normalized) : String(item.value)
   let kind = normalized ? credentialKind(normalized) : tokenKind(credential)
   let reason = normalized ? importabilityReason(normalized, credential, kind) : ''
-  if (normalized && typeof normalized.proxy_key === 'string' && normalized.proxy_key.trim() && (!item.proxies?.length || !item.proxies[0].proxy_key)) {
-    kind = 'unsupported'
-    reason = '找不到 proxy_key 对应的代理，无法导入'
+  if (normalized && !reason && typeof normalized.proxy_key === 'string' && normalized.proxy_key.trim()) {
+    const proxyReason = proxyImportabilityReason(item.proxies || [])
+    if (proxyReason) {
+      kind = 'unsupported'
+      reason = proxyReason
+    }
   }
   if (normalized && reason && !isOpenAiImportEntry(normalized))
     kind = 'unsupported'
@@ -747,8 +759,8 @@ function flattenJson(value: unknown, raw: string, inheritedProxies: Record<strin
       if (!isRecord(item))
         return flattenJson(item, JSON.stringify(item), proxies)
       const key = typeof item.proxy_key === 'string' ? item.proxy_key : ''
-      const proxy = key ? proxies.find(candidate => candidate.proxy_key === key) : undefined
-      return flattenJson(item, JSON.stringify(item), key ? (proxy ? [proxy] : [{}]) : [])
+      const matches = key ? proxies.filter(candidate => candidate.proxy_key === key) : []
+      return flattenJson(item, JSON.stringify(item), matches)
     })
   }
   if (isRecord(value) && Array.isArray(value.documents)) {
@@ -759,6 +771,17 @@ function flattenJson(value: unknown, raw: string, inheritedProxies: Record<strin
     })
   }
   return [{ raw, value, proxies: inheritedProxies }]
+}
+
+function proxyImportabilityReason(proxies: Record<string, unknown>[]) {
+  if (proxies.length === 0)
+    return '找不到 proxy_key 对应的代理，无法导入'
+  if (proxies.length > 1)
+    return 'proxy_key 对应的代理不唯一，无法导入'
+  const status = proxies[0].status
+  if (status !== 'active')
+    return 'proxy_key 对应的代理不可用，无法导入'
+  return ''
 }
 
 function credentialFromObject(value: Record<string, unknown>) {
