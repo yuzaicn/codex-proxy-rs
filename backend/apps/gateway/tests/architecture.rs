@@ -17,6 +17,7 @@ pub(super) const WORKSPACE_MEMBERS: &[&str] = &[
     "crates/gateway-host",
     "crates/gateway-protocol",
     "crates/gateway-store",
+    "crates/model-fingerprint",
     "crates/providers/openai",
     "crates/providers/xai",
 ];
@@ -170,6 +171,7 @@ const PACKAGE_TO_MEMBER: &[(&str, &str)] = &[
     ("gateway-host", "crates/gateway-host"),
     ("gateway-protocol", "crates/gateway-protocol"),
     ("gateway-store", "crates/gateway-store"),
+    ("model-fingerprint", "crates/model-fingerprint"),
     ("provider-openai", "crates/providers/openai"),
     ("provider-xai", "crates/providers/xai"),
 ];
