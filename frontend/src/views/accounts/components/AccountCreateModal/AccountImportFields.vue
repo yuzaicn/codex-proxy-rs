@@ -183,8 +183,22 @@ function updateKind(row: TokenImportRow, event: Event) {
                   </option>
                 </select>
               </td>
-              <td class="max-w-48 truncate px-3 py-2 font-mono text-cp-text" :title="row.credential ? maskToken(row.credential) : '无法提取凭据'">
-                {{ row.credential ? maskToken(row.credential) : '无法提取凭据' }}
+              <td class="max-w-64 truncate px-3 py-2 text-cp-text" :title="row.name || row.email || (row.credential ? maskToken(row.credential) : row.error || '无法提取凭据')">
+                <div v-if="row.name || row.email" class="truncate font-medium">
+                  {{ row.name || row.email }}
+                </div>
+                <div v-if="row.email && row.name" class="truncate text-cp-text-secondary">
+                  {{ row.email }}
+                </div>
+                <div v-if="row.accountId" class="truncate text-cp-text-secondary">
+                  ID: {{ row.accountId }}
+                </div>
+                <div v-if="row.proxyUrl || row.proxies.length" class="truncate text-cp-text-secondary" :title="row.proxyUrl || String(row.proxies[0]?.proxy_key || '')">
+                  代理：{{ row.proxyUrl || String(row.proxies[0]?.proxy_key || '') }}
+                </div>
+                <div class="truncate font-mono text-cp-text-secondary">
+                  {{ row.credential ? maskToken(row.credential) : row.error || '无法提取凭据' }}
+                </div>
               </td>
               <td class="px-3 py-2">
                 <span :class="row.status === 'success' ? 'text-cp-success' : row.status === 'failed' || row.status === 'needs_action' || row.kind === 'unknown' || row.status === 'duplicate' ? 'text-cp-error' : row.status === 'importing' ? 'text-cp-warning' : 'text-cp-text-secondary'">{{ row.status === 'pending' ? '待导入' : row.status === 'importing' ? (row.retryAttempt ? `导入中（第 ${row.retryAttempt} 次重试）` : '导入中') : row.status === 'success' ? '成功' : row.status === 'duplicate' ? '重复' : row.status === 'needs_action' ? '需要处理' : '失败' }}</span>

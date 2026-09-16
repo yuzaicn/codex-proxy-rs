@@ -144,6 +144,135 @@ describe('importTokenRow 自动重试判定', () => {
   })
 })
 
+describe('sub2api 导出解析', () => {
+  it('cliProxyAPI codex 单文件可直接识别，proxy_url 归一化且展示身份', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      type: 'codex',
+      access_token: 'at-codex',
+      refresh_token: 'rt-codex',
+      id_token: 'e30.eyJzdWIiOiIxIn0.sig',
+      email: 'codex@example.test',
+      account_id: 'acct-codex',
+      proxy_url: 'http://proxy.test:8080',
+    }))
+    expect(rows[0]).toMatchObject({ kind: 'at', status: 'pending', email: 'codex@example.test', accountId: 'acct-codex', proxyUrl: 'http://proxy.test:8080' })
+    expect(rows[0].entry).toMatchObject({ outbound_proxy_url: 'http://proxy.test:8080' })
+  })
+
+  it('导入 CLIProxyAPI 行时发送 outbound_proxy_url', async () => {
+    importAccountsMock.mockResolvedValue(successResponse())
+    const onboarding = setup(JSON.stringify({ type: 'codex', access_token: 'at-proxy', proxy_url: 'socks5://proxy.test:1080' }))
+    await onboarding.handleCreate()
+    expect(importAccountsMock).toHaveBeenCalledWith(expect.objectContaining({
+      data: { accounts: [expect.objectContaining({ outbound_proxy_url: 'socks5://proxy.test:1080' })] },
+    }))
+  })
+
+  it('cliProxyAPI gemini/claude/antigravity 类型被拦截', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify([
+      { type: 'gemini', access_token: 'at-gemini' },
+      { type: 'claude', access_token: 'at-claude' },
+      { type: 'antigravity', access_token: 'at-antigravity' },
+    ]))
+    expect(rows.map(row => row.error)).toEqual([
+      'CLIProxyAPI gemini 凭据，无法导入',
+      'CLIProxyAPI claude 凭据，无法导入',
+      'CLIProxyAPI antigravity 凭据，无法导入',
+    ])
+    expect(rows.every(row => row.kind === 'unsupported' && row.status === 'needs_action')).toBe(true)
+  })
+
+  it('连续裸对象与数组均可拆分为多行', () => {
+    const objectText = '{"type":"codex","access_token":"at-one"}\n{"type":"codex","access_token":"at-two"}'
+    expect(parseOpenAiTokenRows(objectText).map(row => row.credential)).toEqual(['at-one', 'at-two'])
+    expect(parseOpenAiTokenRows('[{"type":"codex","access_token":"at-three"},{"type":"codex","access_token":"at-four"}]')).toHaveLength(2)
+  })
+
+  it('从 credentials 提取 OAuth 凭据，保留 name/email 与匹配的 proxy', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      type: 'sub2api-data',
+      proxies: [{ proxy_key: 'proxy-a', protocol: 'socks5', host: 'proxy.test', port: 1080, status: 'active' }],
+      accounts: [{
+        name: '账号一',
+        platform: 'openai',
+        proxy_key: 'proxy-a',
+        credentials: { access_token: 'at-sub2api', email: 'one@example.test' },
+      }],
+    }))
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      credential: 'at-sub2api',
+      kind: 'at',
+      name: '账号一',
+      email: 'one@example.test',
+      status: 'pending',
+      proxies: [{ proxy_key: 'proxy-a' }],
+    })
+  })
+
+  it('标记非 OpenAI、API Key、缺凭据与缺代理的行并给出原因', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [],
+      accounts: [
+        { platform: 'anthropic', credentials: { access_token: 'ignored' } },
+        { platform: 'openai', credentials: { api_key: 'sk-test' } },
+        { platform: 'openai', name: 'empty' },
+        { platform: 'openai', proxy_key: 'missing', credentials: { refresh_token: 'rt-sub2api' } },
+      ],
+    }))
+
+    expect(rows.map(row => row.error)).toEqual([
+      '非 OpenAI 平台，无法导入',
+      'API Key 不是 OAuth 凭据',
+      '既无 Access Token 也无 Refresh Token',
+      '找不到 proxy_key 对应的代理，无法导入',
+    ])
+    expect(rows.every(row => row.status === 'needs_action' && row.kind === 'unsupported')).toBe(true)
+  })
+
+  it('保留非 OpenAI 平台的真实原因，不被 proxy_key 错误覆盖', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [{ proxy_key: 'proxy-k', status: 'active' }],
+      accounts: [{ platform: 'anthropic', proxy_key: 'proxy-k', credentials: { access_token: 'at-anthropic' } }],
+    }))
+
+    expect(rows[0]).toMatchObject({
+      kind: 'unsupported',
+      status: 'needs_action',
+      error: '非 OpenAI 平台，无法导入',
+    })
+  })
+
+  it('代理 key 重复或状态非 active 时在解析期标记明确原因', () => {
+    const rows = parseOpenAiTokenRows(JSON.stringify({
+      proxies: [
+        { proxy_key: 'duplicate', status: 'active' },
+        { proxy_key: 'duplicate', status: 'active' },
+        { proxy_key: 'inactive', status: 'inactive' },
+      ],
+      accounts: [
+        { platform: 'openai', proxy_key: 'duplicate', credentials: { access_token: 'at-duplicate' } },
+        { platform: 'openai', proxy_key: 'inactive', credentials: { access_token: 'at-inactive' } },
+      ],
+    }))
+
+    expect(rows.map(row => row.error)).toEqual([
+      'proxy_key 对应的代理不唯一，无法导入',
+      'proxy_key 对应的代理不可用，无法导入',
+    ])
+    expect(rows.every(row => row.status === 'needs_action' && row.kind === 'unsupported')).toBe(true)
+  })
+
+  it('保持 200 行截断与重复凭据判定', () => {
+    const entries = Array.from({ length: 201 }, (_, index) => ({ access_token: `at-${index}` }))
+    const rows = parseOpenAiTokenRows(JSON.stringify({ accounts: [...entries, { access_token: 'at-0' }] }))
+    expect(rows).toHaveLength(200)
+    expect(rows[0].status).toBe('pending')
+    expect(rows.filter(row => row.status === 'duplicate')).toHaveLength(0)
+  })
+})
+
 describe('手动重试入口', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -184,6 +313,31 @@ describe('手动重试入口', () => {
     expect(importAccountsMock).toHaveBeenCalledTimes(2)
     expect(rows).toHaveLength(2)
     expect(rows.every(row => row.status === 'success')).toBe(true)
+  })
+
+  it('retryFailedImports 不重试解析期判死的 proxy_key 行', async () => {
+    importAccountsMock.mockRejectedValue(new ApiError('请求超时，请稍后重试', 0, undefined, undefined, 'timeout'))
+    const onboarding = setup(JSON.stringify({
+      proxies: [],
+      accounts: [
+        { platform: 'openai', proxy_key: 'missing', credentials: { refresh_token: 'rt-missing-proxy' } },
+        { platform: 'openai', credentials: { refresh_token: 'rt-retryable' } },
+      ],
+    }))
+    const rows = [...onboarding.tokenRows.value]
+    await runImport(onboarding.handleCreate())
+
+    expect(rows[0]).toMatchObject({ status: 'needs_action', error: '找不到 proxy_key 对应的代理，无法导入' })
+    expect(rows[1].status).toBe('failed')
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+
+    importAccountsMock.mockReset()
+    importAccountsMock.mockResolvedValue(successResponse())
+    await runImport(onboarding.retryFailedImports())
+
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+    expect(rows[0].status).toBe('needs_action')
+    expect(rows[1].status).toBe('success')
   })
 })
 
