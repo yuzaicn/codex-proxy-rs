@@ -14,7 +14,6 @@ import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
 import BaseTable from '@/components/base/BaseTable/index.vue'
 import { toast } from '@/components/base/BaseToast'
-import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
 import { errorMessage } from '@/utils/async'
@@ -31,6 +30,7 @@ import AccountQuotaSummaryCell from './components/AccountQuotaSummaryCell/index.
 import AccountResetCreditsCell from './components/AccountResetCreditsCell.vue'
 import AccountStatusBadge from './components/AccountStatusBadge/index.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
+import AccountTimelineCell from './components/AccountTimelineCell.vue'
 import AccountUsagePanel from './components/AccountUsagePanel.vue'
 import { useAccountBatchEditor } from './composables/useAccountBatchEditor'
 import { useAccountConnectionTest } from './composables/useAccountConnectionTest'
@@ -230,7 +230,7 @@ const {
       <template #body>
         <div class="flex min-h-0 flex-col xl:h-full">
           <BaseTable
-            class="h-100! min-h-100 flex-none [--cp-table-row-height:72px] xl:h-auto! xl:min-h-0 xl:flex-1"
+            class="h-100! min-h-100 flex-none [--cp-table-row-height:84px] xl:h-auto! xl:min-h-0 xl:flex-1"
             :columns="accountColumns"
             :rows="accounts"
             :loading="loading"
@@ -327,7 +327,11 @@ const {
             </template>
 
             <template #lastUsedAt="{ row }">
-              <LastUsedAtCell :value="row.usage.lastUsedAt" />
+              <AccountTimelineCell
+                :last-used-at="row.usage.lastUsedAt"
+                :added-at-display="row.addedAtDisplay"
+                :updated-at-display="row.updatedAtDisplay"
+              />
             </template>
 
             <template #actions="{ row }">
