@@ -35,6 +35,10 @@ fn parser_preserves_upstream_run_boundaries() {
     assert_eq!(parse_numbers("1 2 中文 4 5 6"), vec![4, 5, 6]);
     assert_eq!(parse_numbers("1 2 3 English 4 5 6"), vec![1, 2, 3]);
     assert_eq!(parse_numbers("1 2 1418 3"), vec![1, 2, 3]);
+
+    // 已知偏离（见 crate 文档）：上游会把全角 ３ 解析成 3、不把 Nl 的 〇 当断段。
+    assert_eq!(parse_numbers("1 2 ３ 4"), vec![1, 2, 4]);
+    assert_eq!(parse_numbers("1 2 〇 3 4 5"), vec![3, 4, 5]);
 }
 
 #[test]

@@ -9,6 +9,13 @@
 //!
 //! 随库 `provenance.json` 明示 `sameContextCalibrated: false` 与
 //! `multilingualCalibrated: false`，因此调用方仍需使用自己的账号基线校准判定阈值。
+//!
+//! 解析器的第二处已知偏离：上游 `re` 的 `\d` 接受全部 Unicode 十进制数字（Nd，
+//! 如全角 `３`），`str.isalpha()` 只认 L* 类字母；本实现 `is_ascii_digit` 只认
+//! ASCII 数字（其余 Nd 按不断段的分隔符跳过），而 `char::is_alphabetic` 额外把
+//! Nl（如 `〇`）等 Alphabetic 字符当作断段分隔符。468 条参考语料扫描后确认不含
+//! 任何此类字符，golden 双向无感知；线上遇到此类字符时得分可能偏离上游，判定
+//! 阈值仍须以自有账号基线为准。
 
 mod bank;
 mod scoring;
