@@ -21,8 +21,7 @@ use gateway_admin::{
         store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult, DetectionStore},
     },
     workers::intelligence_detection::{
-        IntelligenceDetectionTask, extract_html_document, matched_phrases, prompt_for_round,
-        resolve_reasoning_effort,
+        IntelligenceDetectionTask, should_suspend_degraded, verdict_for_margin,
     },
 };
 use gateway_core::{
@@ -36,76 +35,34 @@ use gateway_core::{
     runtime::SnapshotControl,
     task::{ScheduledTask, WorkerCycleContext, WorkerId, WorkerKind},
 };
-use uuid::Uuid;
+use serde_json::Value;
 
 use crate::use_case::accounts::{EventLog, FakeAccountStore, FakeProviderAdmin, account_record};
 
 #[test]
-fn matches_degraded_phrases_after_whitespace_normalization() {
-    for text in [
-        "内嵌SVG和CSS",
-        "内嵌 SVG 和 CSS",
-        "内联SVG",
-        "内联 SVG 和 CSS",
-        "使用内嵌的SVG",
-        "inline SVG",
-        "embed generated SVG",
-        "用内联样式写SVG动画",
-    ] {
-        assert!(
-            !matched_phrases(text).is_empty(),
-            "expected degraded phrase to match: {text}"
-        );
-    }
-    for text in [
-        "<svg viewBox=\"0 0 10 10\"></svg>",
-        "这个 CSS 不要用内联样式",
-        "一切正常的 HTML 动画。",
-        "SVG and CSS",
-        "inline this answer\0SVG",
-    ] {
-        assert!(
-            matched_phrases(text).is_empty(),
-            "expected normal response not to match: {text}"
-        );
-    }
+fn margin_dead_zone_has_stable_three_state_boundaries() {
+    assert_eq!(verdict_for_margin(0.2), "normal");
+    assert_eq!(verdict_for_margin(-0.2), "degraded");
+    assert_eq!(verdict_for_margin(0.199_999), "undetermined");
+    assert_eq!(verdict_for_margin(-0.199_999), "undetermined");
 }
 
 #[test]
-fn reasoning_effort_auto_uses_catalog_max_and_falls_back_to_xhigh() {
-    assert_eq!(
-        resolve_reasoning_effort(
-            "auto",
-            &["low".to_owned(), "xhigh".to_owned(), "max".to_owned()]
-        ),
-        "max"
-    );
-    assert_eq!(resolve_reasoning_effort("auto", &[]), "xhigh");
-    assert_eq!(
-        resolve_reasoning_effort("high", &["max".to_owned()]),
-        "high"
-    );
-}
-
-#[test]
-fn extracts_fenced_html_block_first() {
-    let text = "说明\n```html\n<!DOCTYPE html><html><body>ok</body></html>\n```\n结尾";
-    assert_eq!(
-        extract_html_document(text),
-        "<!DOCTYPE html><html><body>ok</body></html>"
-    );
-}
-
-#[test]
-fn extracts_bare_html_document() {
-    let text = "前置说明 <HTML><body>x</body></HTML> 之后的内容";
-    assert_eq!(extract_html_document(text), "<HTML><body>x</body></HTML>");
-}
-
-#[test]
-fn keeps_full_text_without_html_structure() {
-    let text = "纯文字答复，没有任何标记。";
-    assert_eq!(extract_html_document(text), text);
+fn enforcement_requires_two_actionable_degraded_rounds() {
+    assert!(!should_suspend_degraded("shadow", Some("degraded"), false));
+    assert!(!should_suspend_degraded("enforce", None, false));
+    assert!(!should_suspend_degraded(
+        "enforce",
+        Some("undetermined"),
+        false
+    ));
+    assert!(!should_suspend_degraded(
+        "enforce",
+        Some("unverifiable"),
+        false
+    ));
+    assert!(should_suspend_degraded("enforce", Some("degraded"), false));
+    assert!(!should_suspend_degraded("enforce", Some("degraded"), true));
 }
 
 #[derive(Clone)]
@@ -114,7 +71,6 @@ struct DetectionFixture {
     targets: Vec<DetectionTarget>,
     records: Arc<Mutex<Vec<NewDetectionRecord>>>,
     latest_checked_at: Arc<Mutex<Option<chrono::DateTime<Utc>>>>,
-    fail_account: Option<String>,
 }
 
 impl DetectionFixture {
@@ -124,30 +80,19 @@ impl DetectionFixture {
                 enabled: true,
                 account_scope: DetectionAccountScope::AllAccounts,
                 interval_secs: 3600,
-                model: "test-model".to_owned(),
+                model: "gpt-5.4".to_owned(),
                 reasoning_effort: "auto".to_owned(),
+                enforcement: "shadow".to_owned(),
                 updated_at: Utc::now(),
             },
             targets,
             records: Arc::new(Mutex::new(Vec::new())),
             latest_checked_at: Arc::new(Mutex::new(None)),
-            fail_account: None,
         })
-    }
-
-    fn fail_account(&mut self, account_id: &str) {
-        self.fail_account = Some(account_id.to_owned());
     }
 
     fn records(&self) -> Vec<NewDetectionRecord> {
         self.records.lock().expect("detection records").clone()
-    }
-
-    fn set_latest_checked_at(&self, checked_at: chrono::DateTime<Utc>) {
-        *self
-            .latest_checked_at
-            .lock()
-            .expect("latest detection timestamp") = Some(checked_at);
     }
 }
 
@@ -181,10 +126,7 @@ impl DetectionStore for DetectionFixture {
     }
 
     async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<chrono::DateTime<Utc>>> {
-        Ok(*self
-            .latest_checked_at
-            .lock()
-            .expect("latest detection timestamp"))
+        Ok(*self.latest_checked_at.lock().expect("latest timestamp"))
     }
 
     async fn list_detection_targets(
@@ -194,61 +136,78 @@ impl DetectionStore for DetectionFixture {
         Ok(self.targets.clone())
     }
 
+    async fn latest_actionable_detection_verdict(
+        &self,
+        account_id: &str,
+    ) -> AdminStoreResult<Option<String>> {
+        Ok(self
+            .records
+            .lock()
+            .expect("detection records")
+            .iter()
+            .rev()
+            .find(|record| {
+                record.account_id == account_id
+                    && matches!(record.verdict.as_str(), "normal" | "degraded")
+            })
+            .map(|record| record.verdict.clone()))
+    }
+
     async fn load_detection_record_html(&self, _: i64) -> AdminStoreResult<Option<String>> {
         Ok(None)
     }
 
     async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()> {
-        if self.fail_account.as_deref() == Some(record.account_id.as_str()) {
-            return Err(store_error("detection records"));
-        }
         self.records.lock().expect("detection records").push(record);
-        *self
-            .latest_checked_at
-            .lock()
-            .expect("latest detection timestamp") = Some(Utc::now());
+        *self.latest_checked_at.lock().expect("latest timestamp") = Some(Utc::now());
         Ok(())
     }
 }
 
-struct CountingProbe {
+struct ProbeFixture {
     active: AtomicUsize,
     peak: AtomicUsize,
+    calls: AtomicUsize,
+    fail_first: usize,
+    bodies: Mutex<Vec<Value>>,
 }
 
-impl CountingProbe {
-    fn peak(&self) -> usize {
-        self.peak.load(Ordering::Acquire)
-    }
-}
-
-impl AccountProbe for CountingProbe {
+impl AccountProbe for ProbeFixture {
     fn probe(
         &self,
-        _: AccountProbeRequest,
-    ) -> BoxFuture<'_, Result<AccountProbeResult, gateway_core::engine::probe::AccountProbeError>>
-    {
+        request: AccountProbeRequest,
+    ) -> BoxFuture<'_, Result<AccountProbeResult, AccountProbeError>> {
         Box::pin(async move {
+            let AccountProbeRequest { operation, .. } = request;
+            let body = match operation {
+                gateway_core::operation::Operation::Generate(generate) => {
+                    generate.protocol_payload().body().clone()
+                }
+                _ => panic!("fingerprint probe must use generate"),
+            };
+            self.bodies
+                .lock()
+                .expect("probe bodies")
+                .push(Value::Object(body));
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            if call < self.fail_first {
+                return Err(AccountProbeError::new(
+                    GatewayError::new(GatewayErrorKind::UpstreamUnavailable, "probe failed"),
+                    AccountProbeErrorSource::Upstream,
+                    None,
+                    None,
+                ));
+            }
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
             self.active.fetch_sub(1, Ordering::AcqRel);
             Ok(AccountProbeResult {
-                text: vec!["normal response".to_owned()],
+                text: vec!["1 2 3 4 5".to_owned()],
                 reasoning: Vec::new(),
             })
         })
     }
-}
-
-#[test]
-fn prompt_for_round_is_stable_and_covers_all_animals() {
-    let first = Uuid::from_bytes([0; 16]);
-    assert_eq!(prompt_for_round(first), prompt_for_round(first));
-    let prompts = (0_u8..=u8::MAX)
-        .map(|first_byte| prompt_for_round(Uuid::from_bytes([first_byte; 16])))
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(prompts.len(), 12);
 }
 
 struct NoopSnapshot;
@@ -283,11 +242,7 @@ fn account_store(count: usize, events: &EventLog) -> Arc<FakeAccountStore> {
     store
 }
 
-async fn run_detection(
-    detection: Arc<DetectionFixture>,
-    probe: Arc<dyn AccountProbe>,
-    count: usize,
-) {
+async fn run_detection(detection: Arc<DetectionFixture>, probe: Arc<ProbeFixture>, count: usize) {
     let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     let accounts = account_store(count, &events);
     let provider = FakeProviderAdmin::new("test", events);
@@ -310,136 +265,72 @@ async fn run_detection(
     .expect("detection cycle");
 }
 
-struct RejectXhighOnceProbe {
-    calls: AtomicUsize,
-    efforts: Mutex<Vec<String>>,
-}
-
-impl AccountProbe for RejectXhighOnceProbe {
-    fn probe(
-        &self,
-        request: AccountProbeRequest,
-    ) -> BoxFuture<'_, Result<AccountProbeResult, AccountProbeError>> {
-        Box::pin(async move {
-            let gateway_core::operation::Operation::Generate(generate) = request.operation else {
-                panic!("detection probe must use generate");
-            };
-            let effort = generate
-                .protocol_payload()
-                .body()
-                .get("reasoning")
-                .and_then(serde_json::Value::as_object)
-                .and_then(|reasoning| reasoning.get("effort"))
-                .and_then(serde_json::Value::as_str)
-                .expect("detection reasoning effort")
-                .to_owned();
-            self.efforts
-                .lock()
-                .expect("efforts lock")
-                .push(effort.clone());
-            self.calls.fetch_add(1, Ordering::AcqRel);
-            if effort == "xhigh" {
-                return Err(AccountProbeError::new(
-                    GatewayError::new(GatewayErrorKind::InvalidRequest, "invalid upstream request"),
-                    AccountProbeErrorSource::Upstream,
-                    None,
-                    None,
-                ));
-            }
-            Ok(AccountProbeResult {
-                text: vec!["normal response".to_owned()],
-                reasoning: vec!["normal reasoning".to_owned()],
-            })
-        })
-    }
-}
-
 #[tokio::test]
-async fn xhigh_invalid_request_retries_high_and_records_the_fallback() {
-    let mut detection = DetectionFixture::new(targets(1));
-    Arc::get_mut(&mut detection)
-        .expect("unique detection fixture")
-        .config
-        .reasoning_effort = "xhigh".to_owned();
-    let probe = Arc::new(RejectXhighOnceProbe {
+async fn three_fixed_challenges_are_sent_without_reasoning_and_recorded_once() {
+    let detection = DetectionFixture::new(targets(1));
+    let probe = Arc::new(ProbeFixture {
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
-        efforts: Mutex::new(Vec::new()),
+        fail_first: 0,
+        bodies: Mutex::new(Vec::new()),
     });
-
     run_detection(detection.clone(), probe.clone(), 1).await;
-
-    assert_eq!(probe.calls.load(Ordering::Acquire), 2);
-    assert_eq!(
-        probe.efforts.lock().expect("efforts lock").as_slice(),
-        ["xhigh", "high"]
+    assert_eq!(probe.calls.load(Ordering::Acquire), 3);
+    assert!(
+        probe
+            .bodies
+            .lock()
+            .expect("probe bodies")
+            .iter()
+            .all(|body| body.get("reasoning").is_none())
     );
     let records = detection.records();
     assert_eq!(records.len(), 1);
-    assert!(
+    assert_eq!(records[0].detector, "fingerprint");
+    assert_eq!(
         records[0]
-            .reasoning_content
-            .as_deref()
-            .is_some_and(|content| content.contains("xhigh 被上游拒绝") && content.contains("high"))
+            .probe_payload
+            .as_ref()
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(3)
     );
 }
 
 #[tokio::test]
-async fn detection_round_records_share_one_round_id() {
-    let detection = DetectionFixture::new(targets(4));
-    let probe = Arc::new(CountingProbe {
+async fn partial_failures_and_zero_success_are_unverifiable() {
+    let detection = DetectionFixture::new(targets(2));
+    let probe = Arc::new(ProbeFixture {
         active: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+        fail_first: 4,
+        bodies: Mutex::new(Vec::new()),
     });
-    run_detection(detection.clone(), probe, 4).await;
-
+    run_detection(detection.clone(), probe, 2).await;
     let records = detection.records();
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 2);
     assert!(
         records
             .iter()
-            .all(|record| record.detection_round_id == records[0].detection_round_id)
+            .all(|record| record.verdict == "unverifiable")
     );
+    assert!(records.iter().any(|record| record.margin.is_some()));
+    assert!(records.iter().any(|record| record.margin.is_none()));
 }
 
 #[tokio::test]
-async fn detection_record_failure_does_not_abort_other_accounts() {
-    let mut detection = DetectionFixture::new(targets(3));
-    Arc::get_mut(&mut detection)
-        .expect("unique detection fixture")
-        .fail_account("acct_1");
-    let probe = Arc::new(CountingProbe {
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-    });
-    run_detection(detection.clone(), probe, 3).await;
-
-    let records = detection.records();
-    assert_eq!(records.len(), 2);
-    assert!(records.iter().all(|record| record.account_id != "acct_1"));
-}
-
-#[tokio::test]
-async fn detection_probe_concurrency_is_bounded() {
+async fn account_concurrency_is_six_with_three_requests_each() {
     let detection = DetectionFixture::new(targets(32));
-    let probe = Arc::new(CountingProbe {
+    let probe = Arc::new(ProbeFixture {
         active: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+        fail_first: 0,
+        bodies: Mutex::new(Vec::new()),
     });
     run_detection(detection, probe.clone(), 32).await;
-
-    assert_eq!(probe.peak(), 16);
-}
-
-#[tokio::test]
-async fn recent_database_round_blocks_new_instance_cycle() {
-    let detection = DetectionFixture::new(targets(1));
-    detection.set_latest_checked_at(Utc::now());
-    let probe = Arc::new(CountingProbe {
-        active: AtomicUsize::new(0),
-        peak: AtomicUsize::new(0),
-    });
-    run_detection(detection.clone(), probe.clone(), 1).await;
-
-    assert!(detection.records().is_empty());
-    assert_eq!(probe.peak(), 0);
+    assert_eq!(probe.calls.load(Ordering::Acquire), 96);
+    assert!(probe.peak.load(Ordering::Acquire) <= 18);
 }

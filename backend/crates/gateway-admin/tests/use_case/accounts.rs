@@ -291,18 +291,13 @@ impl ProviderAdmin for FakeProviderAdmin {
         &self,
         model: &gateway_core::routing::UpstreamModelId,
         input: &str,
-        reasoning_effort: &str,
     ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
-        let mut body = Map::from_iter([
+        let body = Map::from_iter([
             ("model".to_owned(), json!(model.as_str())),
             ("input".to_owned(), json!(input)),
             ("stream".to_owned(), json!(true)),
             ("store".to_owned(), json!(false)),
         ]);
-        body.insert(
-            "reasoning".to_owned(),
-            json!({"effort": reasoning_effort, "summary": "detailed"}),
-        );
         let payload = ProtocolPayload::json_object("openai", body)
             .map_err(|_| ProviderAdminError::new(ProviderAdminErrorKind::Invalid))?;
         Ok(Operation::Generate(GenerateRequest::from_protocol_payload(

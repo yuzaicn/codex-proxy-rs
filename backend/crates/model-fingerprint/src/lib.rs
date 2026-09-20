@@ -18,10 +18,15 @@
 //! 阈值仍须以自有账号基线为准。
 
 mod bank;
+mod challenges;
 mod scoring;
 
 pub use bank::{FingerprintBank, FingerprintError};
+pub use challenges::{CHALLENGES, FingerprintChallenge};
 pub use scoring::{
     DEFAULT_ORDERED_BLOCK_WEIGHT, FingerprintResult, FingerprintScorer,
     UPSTREAM_ORDERED_BLOCK_WEIGHT, parse_numbers,
 };
+
+/// 按日期固定的嵌入库标识，随库文件更新必须同步变更。
+pub const BANK_ID: &str = "modeltrace-bank-20260912";

@@ -183,5 +183,13 @@ fn normalize_config(command: ReplaceDetectionConfig) -> Result<ReplaceDetectionC
         interval_secs: command.interval_secs,
         model,
         reasoning_effort,
+        enforcement: normalize_enforcement(&command.enforcement)?,
     })
+}
+
+fn normalize_enforcement(value: &str) -> Result<String, AdminError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "shadow" | "enforce" => Ok(value.trim().to_ascii_lowercase()),
+        _ => Err(AdminError::invalid("检测 enforcement 不合法")),
+    }
 }

@@ -392,6 +392,14 @@ pub trait DetectionStore: Send + Sync {
         scope: &DetectionAccountScope,
     ) -> AdminStoreResult<Vec<DetectionTarget>>;
 
+    /// 读取账号最近一条可确认身份结论，跳过证据不足的轮次。
+    async fn latest_actionable_detection_verdict(
+        &self,
+        _account_id: &str,
+    ) -> AdminStoreResult<Option<String>> {
+        Ok(None)
+    }
+
     /// 读取单条检测记录的 HTML 原文；记录不存在或 `html_content` 为 NULL 时返回 `None`。
     async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>>;
 

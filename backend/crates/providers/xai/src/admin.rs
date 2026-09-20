@@ -346,9 +346,8 @@ impl ProviderAdmin for XaiAdminProvider {
         &self,
         upstream_model: &UpstreamModelId,
         input_text: &str,
-        reasoning_effort: &str,
     ) -> Result<Operation, ProviderAdminError> {
-        build_detection_operation(upstream_model, input_text, reasoning_effort)
+        build_detection_operation(upstream_model, input_text)
     }
 
     fn dashboard_wire_profile(&self) -> Option<DashboardWireProfile> {
@@ -1342,9 +1341,8 @@ fn build_connection_test_operation(
 fn build_detection_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
-    reasoning_effort: &str,
 ) -> Result<Operation, ProviderAdminError> {
-    build_operation(upstream_model, input_text, true, reasoning_effort)
+    build_operation(upstream_model, input_text, false, "")
 }
 
 fn build_operation(
