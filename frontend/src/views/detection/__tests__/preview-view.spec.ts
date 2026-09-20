@@ -10,6 +10,8 @@ const failedProbe: DetectionRecord = {
   account_id: 'acct-failed',
   checked_at: '2026-09-14T12:00:00Z',
   degraded: false,
+  verdict: 'legacy',
+  detector: 'legacy',
   scheduling_suspended: false,
   reasoning_content: '探测失败（reasoning_effort=max）：request deadline exceeded',
   prompt_used: '请用一句话描述这张图片',
@@ -22,6 +24,8 @@ const normalRecord: DetectionRecord = {
   account_id: 'acct-normal',
   checked_at: '2026-09-14T12:00:01Z',
   degraded: false,
+  verdict: 'legacy',
+  detector: 'legacy',
   scheduling_suspended: false,
   reasoning_content: '用户要求描述图片，我照做了。',
   prompt_used: '请用一句话描述这张图片',
@@ -29,6 +33,21 @@ const normalRecord: DetectionRecord = {
 }
 
 const projectedHtml = '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="sandbox allow-scripts"></head><body><p>一只猫</p></body></html>'
+
+const fingerprintRecord: DetectionRecord = {
+  id: 1003,
+  detection_round_id: 'round-2',
+  account_id: 'acct-fingerprint',
+  checked_at: '2026-09-20T12:00:00Z',
+  degraded: false,
+  verdict: 'normal',
+  detector: 'fingerprint',
+  scheduling_suspended: false,
+  margin: 0.8,
+  claimed_model: 'gpt-5.6-sol',
+  rank_one: 'gpt-5.6-sol',
+  probe_payload: [],
+}
 
 describe('详情弹窗「响应效果」区块的状态判定', () => {
   it('正常记录渲染 srcdoc，不落占位', () => {
@@ -76,5 +95,13 @@ describe('详情弹窗「响应效果」区块的状态判定', () => {
 
   it('idle 起步态等同加载中，弹窗不会出现空白区块', () => {
     expect(responsePreviewView(normalRecord, { status: 'idle' }).kind).toBe('spinner')
+  })
+
+  it('fingerprint 行无论预览状态都固定显示本代占位', () => {
+    const view = responsePreviewView(fingerprintRecord, { status: 'idle' })
+    expect(view).toMatchObject({
+      kind: 'notice',
+      title: '本代检测不产出 HTML 回放',
+    })
   })
 })

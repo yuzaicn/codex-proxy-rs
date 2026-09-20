@@ -36,7 +36,7 @@ describe('fetch 失败态不落入 ready', () => {
     )))
 
     const preview = useHtmlPreview()
-    await preview.load(7)
+    await preview.load({ id: 7, detector: 'legacy' })
 
     const state = preview.getState(7)
     expect(state.status).toBe('missing')
@@ -48,10 +48,22 @@ describe('fetch 失败态不落入 ready', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<p>ok</p>', { status: 200 })))
 
     const preview = useHtmlPreview()
-    await preview.load(8)
+    await preview.load({ id: 8, detector: 'legacy' })
 
     const state = preview.getState(8)
     expect(state.status).toBe('rendering')
     expect(state.srcdoc).toContain('<p>ok</p>')
+  })
+
+  it('fingerprint 行直接进入不支持回放占位且不发请求', async () => {
+    const { useHtmlPreview } = await import('../useHtmlPreview')
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const preview = useHtmlPreview()
+    await preview.load({ id: 9, detector: 'fingerprint' })
+
+    expect(preview.getState(9)).toMatchObject({ status: 'unavailable' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

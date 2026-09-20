@@ -11,12 +11,11 @@ import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
 import BaseForm from '@/components/base/BaseForm/index.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
 import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import { toast } from '@/components/base/BaseToast'
 import { useSettingsStore } from '@/stores/modules/settings'
 import { errorMessage } from '@/utils/async'
-import { normalizeReasoningEffort, REASONING_EFFORT_OPTIONS } from './detection-options'
+import { normalizeReasoningEffort } from './detection-options'
 
 const props = defineProps<{
   active?: boolean
@@ -35,6 +34,7 @@ const form = reactive({
   intervalSecs: '3600',
   model: '',
   reasoningEffort: 'auto' as DetectionConfig['reasoning_effort'],
+  enforcement: 'shadow' as DetectionConfig['enforcement'],
 })
 
 const selectedCount = computed(() => form.accountIds.length)
@@ -48,6 +48,7 @@ function applyConfig(config: DetectionConfig) {
   form.intervalSecs = Number.isFinite(config.interval_secs) ? String(config.interval_secs) : '3600'
   form.model = config.model ?? ''
   form.reasoningEffort = normalizeReasoningEffort(config.reasoning_effort)
+  form.enforcement = config.enforcement === 'enforce' ? 'enforce' : 'shadow'
 }
 
 async function loadAccounts() {
@@ -74,7 +75,7 @@ async function load() {
     applyConfig(config)
   }
   catch (cause: unknown) {
-    error.value = errorMessage(cause, '降智检测配置加载失败')
+    error.value = errorMessage(cause, '模型身份一致性检测配置加载失败')
     toast.error(error.value)
   }
   finally {
@@ -120,6 +121,7 @@ function buildPayload(): DetectionConfig | null {
     interval_secs: intervalSecs,
     model,
     reasoning_effort: form.reasoningEffort,
+    enforcement: form.enforcement,
   }
 }
 
@@ -135,10 +137,10 @@ async function save() {
     const result = await updateDetectionConfig(payload)
     applyConfig(result)
     settingsStore.setDetectionEnabled(result.enabled)
-    toast.success('降智检测配置已保存')
+    toast.success('模型身份一致性检测配置已保存')
   }
   catch (cause: unknown) {
-    error.value = errorMessage(cause, '降智检测配置保存失败')
+    error.value = errorMessage(cause, '模型身份一致性检测配置保存失败')
     toast.error(error.value)
     await load()
   }
@@ -162,7 +164,7 @@ watch(
 </script>
 
 <template>
-  <BaseCard title="降智检测" description="定期检测账号响应质量，识别可能的能力降级">
+  <BaseCard title="模型身份一致性检测" description="定期核对账号返回的模型身份；本检测不检测推理能力退化">
     <template #actions>
       <BaseButton variant="primary" :loading="saving" :disabled="!canSave" @click="save">
         <template #icon>
@@ -180,7 +182,7 @@ watch(
       <BaseForm class="max-w-6xl sm:grid-cols-2">
         <div class="col-span-full flex min-h-6 items-center justify-between gap-3">
           <span class="text-cp leading-none font-medium text-cp-text-secondary">检测服务</span>
-          <BaseSwitch v-model="form.enabled" label="启用降智检测" show-label :disabled="loading" />
+          <BaseSwitch v-model="form.enabled" label="启用模型身份一致性检测" show-label :disabled="loading" />
         </div>
 
         <BaseFormItem label="检测账号范围" description="可选择全部账号，或反选后仅检测指定账号">
@@ -234,15 +236,6 @@ watch(
 
         <BaseFormItem label="检测模型" description="用于检测请求的模型名称">
           <BaseInput v-model="form.model" aria-label="检测模型" placeholder="例如 gpt-5" :disabled="!form.enabled || loading" />
-        </BaseFormItem>
-
-        <BaseFormItem label="推理强度" description="自动档会按模型目录选择支持的最高档位">
-          <BaseSelect
-            v-model="form.reasoningEffort"
-            aria-label="推理强度"
-            :options="REASONING_EFFORT_OPTIONS"
-            :disabled="!form.enabled || loading"
-          />
         </BaseFormItem>
       </BaseForm>
     </div>
