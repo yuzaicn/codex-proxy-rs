@@ -1,6 +1,17 @@
 import request from '../request'
 
 export type ReasoningEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type DetectionEnforcement = 'shadow' | 'enforce'
+export type DetectionVerdict = 'normal' | 'degraded' | 'undetermined' | 'unverifiable' | 'legacy'
+export type DetectionDetector = 'legacy' | 'fingerprint'
+
+export interface DetectionProbeResult {
+  challenge_id: string
+  ok: boolean
+  parsed_count: number
+  raw?: string | null
+  note?: string | null
+}
 
 export interface DetectionConfig {
   enabled: boolean
@@ -8,6 +19,7 @@ export interface DetectionConfig {
   interval_secs: number
   model: string
   reasoning_effort: ReasoningEffort
+  enforcement: DetectionEnforcement
 }
 
 export interface DetectionRound {
@@ -15,6 +27,8 @@ export interface DetectionRound {
   checked_at: string
   degraded_count: number
   normal_count: number
+  undetermined_count: number
+  unverifiable_count: number
   // 本轮实际从调度暂停放回调度池的账号数（仅计检测来源的解除，人工暂停不计）。
   // null/缺失=旧数据未知（新列上线前的轮次），0=明确无恢复；两者展示必须区分，未知不得显示 0。
   recovered_count?: number | null
@@ -30,6 +44,14 @@ export interface DetectionRecord {
   account_plan_type_display?: string | null
   checked_at: string
   degraded: boolean
+  verdict: DetectionVerdict
+  detector: DetectionDetector
+  margin?: number | null
+  claimed_model?: string | null
+  // rank-1 是详情展示所需的 API 派生字段，不单独要求数据库列。
+  rank_one?: string | null
+  bank_id?: string | null
+  probe_payload?: DetectionProbeResult[] | null
   scheduling_suspended: boolean
   // 触发判定的思考过程正文；0007 迁移前的旧记录不回填，读到 null/缺失属正常。
   reasoning_content?: string | null

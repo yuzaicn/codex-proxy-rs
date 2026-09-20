@@ -13,6 +13,11 @@ export function responsePreviewView(
   record: DetectionRecord,
   state: PreviewState,
 ): ResponsePreviewView {
+  if (record.detector === 'fingerprint') {
+    const notice = emptyResponseNotice(record)
+    return { kind: 'notice', title: notice.title, description: notice.description }
+  }
+
   switch (state.status) {
     case 'rendering':
     case 'ready':
@@ -28,7 +33,8 @@ export function responsePreviewView(
         title: '响应内容渲染超时',
         description: '响应正文已取回但渲染超时，可关闭弹窗后重试。',
       }
-    case 'missing': {
+    case 'missing':
+    case 'unavailable': {
       // 先取后渲染：接口 404 / 空正文一律给占位，绝不把接口的错误 JSON 当页面渲染。
       const notice = emptyResponseNotice(record)
       return { kind: 'notice', title: notice.title, description: notice.description }

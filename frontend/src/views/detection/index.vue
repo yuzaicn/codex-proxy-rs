@@ -17,7 +17,7 @@ import { toast } from '@/components/base/BaseToast'
 import { errorMessage } from '@/utils/async'
 import { formatDateTime } from '@/utils/date'
 import AccountIdentityCell from '@/views/accounts/components/AccountIdentityCell.vue'
-import { normalizeMatchedPhrases } from './presentation'
+import { detectionEvidencePresentation, detectionVerdictPresentation } from './presentation'
 import { responsePreviewView } from './preview-view'
 import { useHtmlPreview } from './useHtmlPreview'
 
@@ -47,7 +47,7 @@ const currentPrompt = computed(() => {
   return prompt?.trim() ? prompt : null
 })
 
-const currentMatchedPhrases = computed(() => normalizeMatchedPhrases(currentRecord.value?.matched_phrases))
+const currentEvidence = computed(() => currentRecord.value ? detectionEvidencePresentation(currentRecord.value) : null)
 
 const recordColumns = [
   { key: 'account', label: '账号', kind: 'identity' as const, size: '2xl' as const },
@@ -73,7 +73,10 @@ const currentResponseView = computed<ResponsePreviewView | null>(() => {
   return record && state ? responsePreviewView(record, state) : null
 })
 
-function previewStatusLabel(status: PreviewStatus) {
+function previewStatusLabel(record: DetectionRecord, status: PreviewStatus) {
+  if (record.detector === 'fingerprint')
+    return '本代检测不产出 HTML 回放'
+
   switch (status) {
     case 'loading':
       return '正在加载预览…'
@@ -100,7 +103,26 @@ function cancelRoundPreviewLoads(roundId: string) {
 }
 
 function loadPreview(record: DetectionRecord) {
-  return preview.load(record.id)
+  return preview.load(record)
+}
+
+function verdictBadgeClass(record: DetectionRecord) {
+  switch (detectionVerdictPresentation(record).tone) {
+    case 'success':
+      return 'bg-cp-success-container text-cp-success-on-container'
+    case 'error':
+      return 'bg-cp-error-container text-cp-error-on-container'
+    case 'warning':
+      return 'bg-cp-warning-container text-cp-warning-on-container'
+    default:
+      return 'bg-cp-fill-tertiary text-cp-text-secondary'
+  }
+}
+
+function challengeStatusClass(ok: boolean) {
+  return ok
+    ? 'bg-cp-success-container text-cp-success-on-container'
+    : 'bg-cp-error-container text-cp-error-on-container'
 }
 
 function onPreviewFrameLoad(recordId: number) {
@@ -258,7 +280,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="w-full">
-    <BasePageHeader title="检测记录" description="查看每次降智检测的结果与账号调度状态">
+    <BasePageHeader title="模型身份一致性检测" description="查看每轮身份归因证据与账号调度状态；本检测不检测推理能力退化">
       <template #actions>
         <BaseButton variant="secondary" size="sm" :loading="roundsLoading" aria-label="刷新检测记录" @click="loadRounds">
           <template #icon>
@@ -295,7 +317,7 @@ onBeforeUnmount(() => {
         v-else-if="rounds.length === 0"
         class="m-5"
         title="暂无检测记录"
-        description="开启降智检测后，完成的检测批次会显示在这里。"
+        description="开启模型身份一致性检测后，完成的检测批次会显示在这里。"
         surface="inset"
       />
 
@@ -316,10 +338,16 @@ onBeforeUnmount(() => {
             <!-- 徽标收进可换行分组：窄屏放不下时整组换行，保住时间戳的最小宽度不被挤没。 -->
             <span class="ml-auto flex flex-wrap items-center justify-end gap-3">
               <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold text-cp-error-on-container">
-                降智 {{ round.degraded_count }} 个
+                身份不一致 {{ round.degraded_count }} 个
               </span>
               <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-success-container px-2 py-1 text-cp-xs font-bold text-cp-success-on-container">
-                正常 {{ round.normal_count }} 个
+                身份一致 {{ round.normal_count }} 个
+              </span>
+              <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-warning-container px-2 py-1 text-cp-xs font-bold text-cp-warning-on-container">
+                证据不足 {{ round.undetermined_count }} 个
+              </span>
+              <span class="inline-flex shrink-0 items-center gap-1 rounded-cp-sm bg-cp-fill-tertiary px-2 py-1 text-cp-xs font-bold text-cp-text-secondary">
+                无法归因 {{ round.unverifiable_count }} 个
               </span>
               <!-- 恢复=从坏变好的动作，取 info 档语义色区别于 error/success；null/缺失是「未知」不渲染，0 是明确事实照常显示。 -->
               <span
@@ -359,7 +387,7 @@ onBeforeUnmount(() => {
               <template #preview="{ row }">
                 <div
                   class="flex min-w-0 items-center gap-2"
-                  :aria-label="`${previewStatusLabel(getPreviewState(row.id).status)}，点击查看详情`"
+                  :aria-label="`${previewStatusLabel(row, getPreviewState(row.id).status)}，点击查看详情`"
                 >
                   <div
                     :ref="element => registerPreviewElement(element, row, round.detection_round_id)"
@@ -383,16 +411,16 @@ onBeforeUnmount(() => {
                       v-if="getPreviewState(row.id).status !== 'rendering' && getPreviewState(row.id).status !== 'ready'"
                       class="absolute inset-0 grid place-items-center p-3 text-center text-cp-xs font-emphasis text-cp-text-secondary"
                     >
-                      <span>{{ previewStatusLabel(getPreviewState(row.id).status) }}</span>
+                      <span>{{ previewStatusLabel(row, getPreviewState(row.id).status) }}</span>
                     </div>
                     <span
                       class="absolute bottom-2 left-2 rounded-cp-sm px-2 py-1 text-cp-xs font-bold shadow-[0_1px_3px_var(--cp-color-shadow)]"
-                      :class="row.degraded ? 'bg-cp-error-container text-cp-error-on-container' : 'bg-cp-success-container text-cp-success-on-container'"
+                      :class="verdictBadgeClass(row)"
                     >
-                      {{ row.degraded ? '降智' : '不降智' }}
+                      {{ detectionVerdictPresentation(row).label }}
                     </span>
                   </div>
-                  <span class="sr-only">{{ row.degraded ? '该账号判定为降智' : '该账号判定为不降智' }}</span>
+                  <span class="sr-only">{{ detectionVerdictPresentation(row).assistiveLabel }}</span>
                 </div>
               </template>
               <template #checked_at="{ row }">
@@ -401,9 +429,9 @@ onBeforeUnmount(() => {
               <template #degraded="{ row }">
                 <span
                   class="inline-flex rounded-cp-sm px-2 py-1 text-cp-xs font-bold"
-                  :class="row.degraded ? 'bg-cp-error-container text-cp-error-on-container' : 'bg-cp-success-container text-cp-success-on-container'"
+                  :class="verdictBadgeClass(row)"
                 >
-                  {{ row.degraded ? '降智' : '不降智' }}
+                  {{ detectionVerdictPresentation(row).label }}
                 </span>
               </template>
               <template #scheduling_suspended="{ row }">
@@ -451,13 +479,13 @@ onBeforeUnmount(() => {
             v-text="currentPrompt"
           />
         </div>
-        <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+        <div v-if="currentEvidence?.kind === 'legacy'" class="rounded-lg bg-cp-bg-container px-3 py-2.5">
           <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
             命中判词
           </p>
-          <div v-if="currentMatchedPhrases.length > 0" class="mt-2 flex flex-wrap gap-1.5">
+          <div v-if="currentEvidence.matchedPhrases.length > 0" class="mt-2 flex flex-wrap gap-1.5">
             <span
-              v-for="phrase in currentMatchedPhrases"
+              v-for="phrase in currentEvidence.matchedPhrases"
               :key="phrase"
               class="inline-flex max-w-full rounded-cp-sm bg-cp-error-container px-2 py-1 text-cp-xs font-bold wrap-break-word text-cp-error-on-container"
             >
@@ -468,7 +496,72 @@ onBeforeUnmount(() => {
             {{ currentRecord.degraded ? '该记录未保存命中判词' : '未命中判词' }}
           </p>
         </div>
-        <div class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+        <div v-else-if="currentEvidence?.kind === 'fingerprint'" class="rounded-lg bg-cp-bg-container px-3 py-2.5">
+          <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+            身份归因证据
+          </p>
+          <dl class="mt-2 grid gap-2 sm:grid-cols-2">
+            <div class="min-w-0 rounded-cp-sm bg-cp-fill-quaternary px-3 py-2">
+              <dt class="text-cp-xs font-emphasis text-cp-text-quaternary">
+                Margin
+              </dt>
+              <dd class="mt-1 mb-0 font-mono text-cp-sm font-bold tabular-nums text-cp-text">
+                {{ currentEvidence.margin }}
+              </dd>
+            </div>
+            <div class="min-w-0 rounded-cp-sm bg-cp-fill-quaternary px-3 py-2">
+              <dt class="text-cp-xs font-emphasis text-cp-text-quaternary">
+                指纹库
+              </dt>
+              <dd class="mt-1 mb-0 wrap-break-word font-mono text-cp-sm font-bold text-cp-text">
+                {{ currentEvidence.bankId }}
+              </dd>
+            </div>
+            <div class="min-w-0 rounded-cp-sm bg-cp-fill-quaternary px-3 py-2">
+              <dt class="text-cp-xs font-emphasis text-cp-text-quaternary">
+                声明模型
+              </dt>
+              <dd class="mt-1 mb-0 wrap-break-word font-mono text-cp-sm font-bold text-cp-text">
+                {{ currentEvidence.claimedModel }}
+              </dd>
+            </div>
+            <div class="min-w-0 rounded-cp-sm bg-cp-fill-quaternary px-3 py-2">
+              <dt class="text-cp-xs font-emphasis text-cp-text-quaternary">
+                Rank-1 模型
+              </dt>
+              <dd class="mt-1 mb-0 wrap-break-word font-mono text-cp-sm font-bold text-cp-text">
+                {{ currentEvidence.rankOneModel }}
+              </dd>
+            </div>
+          </dl>
+          <div class="mt-3">
+            <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
+              挑战状态
+            </p>
+            <ul v-if="currentEvidence.challenges.length > 0" class="mt-2 mb-0 grid list-none gap-2 p-0">
+              <li
+                v-for="challenge in currentEvidence.challenges"
+                :key="challenge.challenge_id"
+                class="flex min-w-0 flex-wrap items-center gap-2 rounded-cp-sm bg-cp-fill-quaternary px-3 py-2"
+              >
+                <code class="min-w-0 flex-1 wrap-break-word text-cp-xs font-bold text-cp-text">{{ challenge.challenge_id }}</code>
+                <span class="inline-flex shrink-0 rounded-cp-sm px-2 py-1 text-cp-xs font-bold" :class="challengeStatusClass(challenge.ok)">
+                  {{ challenge.ok ? '成功' : '失败' }}
+                </span>
+                <span class="shrink-0 font-mono text-cp-xs tabular-nums text-cp-text-secondary">
+                  解析 {{ challenge.parsed_count }} 项
+                </span>
+                <span v-if="challenge.note" class="w-full wrap-break-word text-cp-xs text-cp-text-secondary">
+                  {{ challenge.note }}
+                </span>
+              </li>
+            </ul>
+            <p v-else class="mt-2 mb-0 text-cp-sm font-emphasis text-cp-text-quaternary">
+              该记录未返回挑战明细
+            </p>
+          </div>
+        </div>
+        <div v-if="currentEvidence?.kind === 'legacy'" class="rounded-lg bg-cp-bg-container px-3 py-2.5">
           <p class="m-0 text-cp-xs font-heavy text-cp-text-quaternary">
             思考过程
           </p>

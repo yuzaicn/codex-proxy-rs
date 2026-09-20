@@ -111,7 +111,7 @@ watch(
         :options="[
           { label: '运行设置', value: 'runtime' },
           { label: '备份', value: 'backup' },
-          { label: '降智检测', value: 'detection' },
+          { label: '模型身份检测', value: 'detection' },
           { label: '重置检测', value: 'reset-detection' },
         ]"
         @update:model-value="switchSection"

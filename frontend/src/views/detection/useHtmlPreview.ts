@@ -1,8 +1,9 @@
+import type { DetectionRecord } from '@/api'
 import { reactive } from 'vue'
 
 import { getDetectionRecordHtmlUrl } from '@/api'
 
-export type PreviewStatus = 'idle' | 'loading' | 'rendering' | 'ready' | 'missing' | 'error' | 'timeout'
+export type PreviewStatus = 'idle' | 'loading' | 'rendering' | 'ready' | 'missing' | 'unavailable' | 'error' | 'timeout'
 
 export interface PreviewState {
   status: PreviewStatus
@@ -48,10 +49,18 @@ export function useHtmlPreview() {
     state.status = 'idle'
   }
 
-  async function load(recordId: number) {
+  async function load(record: Pick<DetectionRecord, 'detector' | 'id'>) {
+    const recordId = record.id
     const state = getState(recordId)
     if (state.status === 'loading' || state.status === 'rendering')
       return
+
+    if (record.detector === 'fingerprint') {
+      state.controller = undefined
+      state.srcdoc = undefined
+      state.status = 'unavailable'
+      return
+    }
 
     const controller = new AbortController()
     state.controller = controller
