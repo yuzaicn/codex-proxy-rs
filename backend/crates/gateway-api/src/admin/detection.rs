@@ -66,6 +66,7 @@ pub struct DetectionConfigView {
     pub interval_secs: u32,
     pub model: String,
     pub reasoning_effort: String,
+    pub enforcement: String,
 }
 
 impl From<DetectionConfig> for DetectionConfigView {
@@ -76,6 +77,7 @@ impl From<DetectionConfig> for DetectionConfigView {
             interval_secs: config.interval_secs,
             model: config.model,
             reasoning_effort: config.reasoning_effort,
+            enforcement: config.enforcement,
         }
     }
 }
@@ -89,6 +91,8 @@ pub struct UpdateDetectionConfigRequest {
     pub interval_secs: u32,
     pub model: String,
     pub reasoning_effort: String,
+    #[serde(default = "default_enforcement")]
+    pub enforcement: String,
 }
 
 impl UpdateDetectionConfigRequest {
@@ -99,6 +103,7 @@ impl UpdateDetectionConfigRequest {
             interval_secs: self.interval_secs,
             model: self.model,
             reasoning_effort: self.reasoning_effort,
+            enforcement: self.enforcement,
         })
     }
 }
@@ -162,7 +167,7 @@ impl DetectionRecordsQuery {
 }
 
 /// 一条检测记录视图（含账号身份投影）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DetectionRecordView {
     pub id: i64,
     pub detection_round_id: String,
@@ -177,6 +182,12 @@ pub struct DetectionRecordView {
     pub reasoning_content: Option<String>,
     pub prompt_used: Option<String>,
     pub matched_phrases: Vec<String>,
+    pub verdict: String,
+    pub detector: String,
+    pub margin: Option<f64>,
+    pub claimed_model: Option<String>,
+    pub bank_id: Option<String>,
+    pub probe_payload: Option<serde_json::Value>,
 }
 
 impl From<DetectionRecord> for DetectionRecordView {
@@ -195,6 +206,12 @@ impl From<DetectionRecord> for DetectionRecordView {
             reasoning_content: record.reasoning_content,
             prompt_used: record.prompt_used,
             matched_phrases: record.matched_phrases,
+            verdict: record.verdict,
+            detector: record.detector,
+            margin: record.margin,
+            claimed_model: record.claimed_model,
+            bank_id: record.bank_id,
+            probe_payload: record.probe_payload,
         }
     }
 }
@@ -207,6 +224,8 @@ pub struct DetectionRoundView {
     pub degraded_count: u64,
     pub normal_count: u64,
     pub recovered_count: Option<u64>,
+    pub undetermined_count: u64,
+    pub unverifiable_count: u64,
 }
 
 impl From<DetectionRound> for DetectionRoundView {
@@ -217,8 +236,14 @@ impl From<DetectionRound> for DetectionRoundView {
             degraded_count: round.degraded_count,
             normal_count: round.normal_count,
             recovered_count: round.recovered_count,
+            undetermined_count: round.undetermined_count,
+            unverifiable_count: round.unverifiable_count,
         }
     }
+}
+
+fn default_enforcement() -> String {
+    "shadow".to_owned()
 }
 
 /// 构造固定的检测配置与检测记录路由。

@@ -217,6 +217,7 @@ const ALLOWED_INTERNAL_EDGES: &[(&str, &str)] = &[
     ("codex-proxy-rs", "provider-openai"),
     ("codex-proxy-rs", "provider-xai"),
     ("gateway-admin", "gateway-core"),
+    ("gateway-admin", "model-fingerprint"),
     ("gateway-api", "gateway-admin"),
     ("gateway-api", "gateway-core"),
     ("gateway-api", "gateway-protocol"),

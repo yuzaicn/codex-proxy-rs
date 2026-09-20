@@ -1,13 +1,8 @@
-//! 降智检测 Worker：周期向账号发送固定探测提示词，按降智指征翻转调度暂停。
+//! ModelTrace 指纹检测 Worker。
 //!
-//! Host 以固定短间隔调用 `run_cycle`；每个周期先读最新检测配置，未启用或距离上一
-//! 轮不足 `interval_secs` 时直接空转，因此配置修改无需重启即可生效。探测通过
-//! [`AccountProbe`] 走真实执行链（该链路对诊断请求跳过本地调度资格投影，暂停中的
-//! 账号也能被探测到），存储读写全部经由 Admin ports，不触碰 HTTP 层与 Provider SDK。
-//!
-//! 自动恢复带来源守卫：只有 `scheduling_suspended_by = detection` 的账号会在探测
-//! 恢复正常后被解除暂停，人工暂停不受检测结果影响。多实例部署通过 Host 提供的
-//! Redis leader lease 保证同一轮只有一个实例执行。
+//! 每个账号每轮执行三个固定挑战，收齐后聚合评分并落一条记录。`shadow` 模式记录
+//! 全部结论但不新建暂停，`enforce` 模式仅在连续两轮 `degraded` 后暂停账号；单轮
+//! `normal` 仍可释放检测来源的既有暂停。评分库加载失败或证据不足都不会猜测结论。
 
 use std::sync::{
     Arc,
@@ -21,12 +16,13 @@ use futures::stream::{self, StreamExt};
 use gateway_core::{
     account::{ProviderAccountId, SchedulingSuspensionSource},
     engine::probe::{AccountProbe, AccountProbeError, AccountProbeRequest, AccountProbeResult},
-    error::GatewayErrorKind,
     lifecycle::CancellationToken,
     routing::{ConfigRevision, UpstreamModelId},
     runtime::SnapshotControl,
     task::{ScheduledTask, WorkerCycleContext, WorkerTaskError},
 };
+use model_fingerprint::{BANK_ID, CHALLENGES, FingerprintChallenge, FingerprintScorer};
+use serde_json::{Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -41,25 +37,15 @@ use crate::{
     },
 };
 
-/// 探测提示词模板；每轮从动物清单中稳定选择一个动物。
-const DETECTION_PROMPT_TEMPLATE: &str = "创建一个HTML，内容是SVG绘制一个{animal}骑自行车的2D动画。";
-const DETECTION_ANIMALS: &[&str] = &[
-    "企鹅",
-    "鹈鹕",
-    "猫",
-    "狗",
-    "熊猫",
-    "长颈鹿",
-    "章鱼",
-    "袋鼠",
-    "犀牛",
-    "火烈鸟",
-    "树懒",
-    "浣熊",
-];
-
-/// 单轮探测允许同时在途的账号数。
-const MAX_CONCURRENT_PROBES: usize = 16;
+const MAX_CONCURRENT_PROBES: usize = 6;
+const MARGIN_THRESHOLD: f64 = 0.2;
+const VERDICT_NORMAL: &str = "normal";
+const VERDICT_DEGRADED: &str = "degraded";
+const VERDICT_UNDETERMINED: &str = "undetermined";
+const VERDICT_UNVERIFIABLE: &str = "unverifiable";
+const DETECTOR: &str = "fingerprint";
+const ENFORCEMENT_SHADOW: &str = "shadow";
+const ENFORCEMENT_ENFORCE: &str = "enforce";
 
 /// 降智检测周期任务；一次 `run_cycle` 至多执行一轮全量探测。
 pub struct IntelligenceDetectionTask {
@@ -75,19 +61,26 @@ struct RoundGuard<'a> {
     in_progress: &'a AtomicBool,
 }
 
+struct ProbeSample {
+    payload: Value,
+    scores: Option<Vec<f64>>,
+}
+
+#[derive(Clone, Copy)]
+struct ProbeContext<'a> {
+    upstream_model: &'a UpstreamModelId,
+    claimed_model: &'a str,
+    scorer: &'a FingerprintScorer,
+    enforcement: &'a str,
+    round_id: Uuid,
+}
+
 enum DetectionProbeFailure {
     Build(ProviderAdminError),
     Request(AccountProbeError),
 }
 
 impl DetectionProbeFailure {
-    fn is_invalid_request(&self) -> bool {
-        matches!(
-            self,
-            Self::Request(error) if error.kind() == GatewayErrorKind::InvalidRequest
-        )
-    }
-
     fn safe_message(&self) -> String {
         match self {
             Self::Build(error) => format!("构造探测请求失败：{error}"),
@@ -135,8 +128,16 @@ impl IntelligenceDetectionTask {
             return Ok(());
         }
         let Ok(upstream_model) = UpstreamModelId::new(config.model.trim().to_owned()) else {
-            warn!("降智检测已启用但检测模型为空或不合法，跳过本轮");
+            warn!("指纹检测已启用但检测模型为空或不合法，跳过本轮");
             return Ok(());
+        };
+        let scorer = match FingerprintScorer::from_embedded_bank() {
+            Ok(scorer) => Arc::new(scorer),
+            Err(error) => {
+                // 指纹库是判定依据；损坏时空转比误报正常更安全。
+                warn!(error = %error, "ModelTrace 指纹库加载失败，跳过检测轮次");
+                return Ok(());
+            }
         };
         let Some(_round_guard) = self.round_due(&config).await? else {
             return Ok(());
@@ -149,25 +150,21 @@ impl IntelligenceDetectionTask {
         if targets.is_empty() {
             return Ok(());
         }
-        let advertised_efforts = self
-            .snapshot
-            .supported_reasoning_efforts(&targets[0].provider_kind, &upstream_model);
-        let reasoning_effort =
-            resolve_reasoning_effort(&config.reasoning_effort, &advertised_efforts);
         let round_id = Uuid::new_v4();
-        let prompt = prompt_for_round(round_id);
+        let claimed_model = config.model.trim().to_owned();
+        let enforcement = normalized_enforcement(&config.enforcement);
         info!(
             %round_id,
             targets = targets.len(),
-            model = upstream_model.as_str(),
-            reasoning_effort,
-            "降智检测轮次开始"
+            model = %claimed_model,
+            enforcement,
+            "指纹检测轮次开始"
         );
         let outcomes = stream::iter(targets.into_iter().map(|target| {
             let cancellation = cancellation.clone();
             let upstream_model = upstream_model.clone();
-            let prompt = prompt.clone();
-            let reasoning_effort = reasoning_effort.clone();
+            let claimed_model = claimed_model.clone();
+            let scorer = scorer.clone();
             async move {
                 if cancellation.is_cancelled() {
                     return None;
@@ -176,19 +173,16 @@ impl IntelligenceDetectionTask {
                     warn!(account = target.account_id, "账号 ID 不合法，跳过探测");
                     return None;
                 };
-                let degraded = match self
-                    .probe_and_record(
-                        &account_id,
-                        &target,
-                        &upstream_model,
-                        &prompt,
-                        &reasoning_effort,
-                        round_id,
-                    )
-                    .await
-                {
-                    Ok(Some(degraded)) => degraded,
-                    Ok(None) => return None,
+                let context = ProbeContext {
+                    upstream_model: &upstream_model,
+                    claimed_model: &claimed_model,
+                    scorer: scorer.as_ref(),
+                    enforcement,
+                    round_id,
+                };
+                match self.probe_and_record(&account_id, &target, context).await {
+                    Ok(Some((verdict, revision))) => Some((verdict, revision)),
+                    Ok(None) => None,
                     Err(error) => {
                         warn!(
                             account = target.account_id,
@@ -196,25 +190,9 @@ impl IntelligenceDetectionTask {
                             error = error.as_safe_str(),
                             "写入探测记录失败，跳过该账号"
                         );
-                        return None;
-                    }
-                };
-                let revision = match self
-                    .reconcile_suspension(&account_id, &target, degraded, round_id)
-                    .await
-                {
-                    Ok(revision) => revision,
-                    Err(error) => {
-                        warn!(
-                            account = target.account_id,
-                            %round_id,
-                            error = error.as_safe_str(),
-                            "更新账号调度状态失败，保留该账号本轮记录"
-                        );
                         None
                     }
-                };
-                Some((degraded, revision))
+                }
             }
         }))
         .buffer_unordered(MAX_CONCURRENT_PROBES)
@@ -222,12 +200,11 @@ impl IntelligenceDetectionTask {
         .await;
         let mut last_committed: Option<Revision> = None;
         let mut degraded_count = 0_usize;
-        for outcome in outcomes {
-            let Some((degraded, revision)) = outcome else {
-                continue;
-            };
-            degraded_count += usize::from(degraded);
-            if let Some(revision) = revision {
+        for outcome in outcomes.into_iter().flatten() {
+            if outcome.0 == VERDICT_DEGRADED {
+                degraded_count += 1;
+            }
+            if let Some(revision) = outcome.1 {
                 last_committed =
                     Some(last_committed.map_or(revision, |committed| committed.max(revision)));
             }
@@ -235,7 +212,7 @@ impl IntelligenceDetectionTask {
         if let Some(revision) = last_committed {
             self.publish_revision(revision).await;
         }
-        info!(%round_id, degraded = degraded_count, "降智检测轮次结束");
+        info!(%round_id, degraded = degraded_count, "指纹检测轮次结束");
         Ok(())
     }
 
@@ -264,16 +241,12 @@ impl IntelligenceDetectionTask {
         }))
     }
 
-    /// 探测单个账号并落检测记录；探测失败只告警不落记录，返回 `None`。
     async fn probe_and_record(
         &self,
         account_id: &ProviderAccountId,
         target: &DetectionTarget,
-        upstream_model: &UpstreamModelId,
-        prompt: &str,
-        reasoning_effort: &str,
-        round_id: Uuid,
-    ) -> Result<Option<bool>, WorkerTaskError> {
+        context: ProbeContext<'_>,
+    ) -> Result<Option<(String, Option<Revision>)>, WorkerTaskError> {
         let Ok(provider) = self.providers.require(&target.provider_kind) else {
             warn!(
                 account = target.account_id,
@@ -282,88 +255,118 @@ impl IntelligenceDetectionTask {
             );
             return Ok(None);
         };
-        let mut effective_effort = reasoning_effort.to_owned();
-        let mut fallback_note = None;
-        let mut result = self
-            .execute_probe(
-                provider.as_ref(),
-                account_id,
-                target,
-                upstream_model,
-                prompt,
-                &effective_effort,
-            )
-            .await;
-        if effective_effort == "xhigh"
-            && result
-                .as_ref()
-                .is_err_and(DetectionProbeFailure::is_invalid_request)
+
+        if !context
+            .scorer
+            .model_order()
+            .iter()
+            .any(|model| model == context.claimed_model)
         {
-            effective_effort = "high".to_owned();
-            fallback_note =
-                Some("reasoning_effort=xhigh 被上游拒绝，本轮已自动退档到 high".to_owned());
-            result = self
-                .execute_probe(
-                    provider.as_ref(),
-                    account_id,
-                    target,
-                    upstream_model,
-                    prompt,
-                    &effective_effort,
-                )
-                .await;
-        }
-        let (text, reasoning) = match result {
-            Ok(result) => (result.text.concat(), result.reasoning.concat()),
-            Err(error) => {
-                let failure = format!(
-                    "{}探测失败（reasoning_effort={effective_effort}）：{}",
-                    fallback_note
-                        .as_deref()
-                        .map_or(String::new(), |note| format!("{note}；")),
-                    error.safe_message()
-                );
-                warn!(
-                    account = target.account_id,
-                    %round_id,
-                    error = %failure,
-                    "探测请求失败，写入失败留痕；不改变其调度状态"
-                );
-                self.detection
-                    .insert_detection_record(NewDetectionRecord {
-                        detection_round_id: round_id,
-                        account_id: target.account_id.clone(),
-                        degraded: false,
-                        html_content: None,
-                        reasoning_content: Some(failure),
-                        prompt_used: Some(prompt.to_owned()),
-                        matched_phrases: Vec::new(),
-                        suspension_released: false,
+            warn!(
+                model = context.claimed_model,
+                "检测模型不在指纹库内，记为 unverifiable"
+            );
+            let payload = CHALLENGES
+                .iter()
+                .map(|challenge| {
+                    json!({
+                        "challenge_id": challenge.id,
+                        "ok": false,
+                        "parsed_count": 0,
+                        "raw": Value::Null,
+                        "note": "claimed model is not present in fingerprint bank",
                     })
+                })
+                .collect::<Vec<_>>();
+            self.detection
+                .insert_detection_record(NewDetectionRecord {
+                    detection_round_id: context.round_id,
+                    account_id: target.account_id.clone(),
+                    degraded: false,
+                    reasoning_content: None,
+                    prompt_used: None,
+                    suspension_released: false,
+                    verdict: VERDICT_UNVERIFIABLE.to_owned(),
+                    detector: DETECTOR.to_owned(),
+                    margin: None,
+                    claimed_model: Some(context.claimed_model.to_owned()),
+                    bank_id: Some(BANK_ID.to_owned()),
+                    probe_payload: Some(Value::Array(payload)),
+                })
+                .await
+                .map_err(store_error)?;
+            return Ok(Some((VERDICT_UNVERIFIABLE.to_owned(), None)));
+        }
+
+        let samples = stream::iter(CHALLENGES.iter().copied().map(|challenge| {
+            let provider = provider.clone();
+            async move {
+                self.execute_probe(provider.as_ref(), account_id, target, &context, challenge)
                     .await
-                    .map_err(store_error)?;
-                return Ok(None);
             }
+        }))
+        .buffer_unordered(CHALLENGES.len())
+        .collect::<Vec<_>>()
+        .await;
+        let mut payload = Vec::with_capacity(samples.len());
+        let mut score_vectors = Vec::new();
+        for sample in samples {
+            payload.push(sample.payload);
+            if let Some(scores) = sample.scores {
+                score_vectors.push(scores);
+            }
+        }
+        let valid_count = score_vectors.len();
+        let (verdict, margin) = if valid_count == CHALLENGES.len() {
+            let (_, margin) =
+                aggregate_scores(&score_vectors, context.scorer, context.claimed_model)
+                    .map_err(|error| WorkerTaskError::safe(error.to_string()))?;
+            (verdict_for_margin(margin).to_owned(), Some(margin))
+        } else if valid_count > 0 {
+            let (_, margin) =
+                aggregate_scores(&score_vectors, context.scorer, context.claimed_model)
+                    .map_err(|error| WorkerTaskError::safe(error.to_string()))?;
+            (VERDICT_UNVERIFIABLE.to_owned(), Some(margin))
+        } else {
+            (VERDICT_UNVERIFIABLE.to_owned(), None)
         };
-        let matched = matched_phrases(&format!("{reasoning}\0{text}"));
-        let degraded = !matched.is_empty();
-        let reasoning_content = fallback_note
-            .map(|note| format!("[{note}]\n{reasoning}"))
-            .unwrap_or(reasoning);
+        let previous = if verdict == VERDICT_DEGRADED && context.enforcement == ENFORCEMENT_ENFORCE
+        {
+            self.detection
+                .latest_actionable_detection_verdict(&target.account_id)
+                .await
+                .map_err(store_error)?
+        } else {
+            None
+        };
         self.detection
             .insert_detection_record(NewDetectionRecord {
-                detection_round_id: round_id,
+                detection_round_id: context.round_id,
                 account_id: target.account_id.clone(),
-                degraded,
-                html_content: Some(extract_html_document(&text)),
-                reasoning_content: Some(reasoning_content),
-                prompt_used: Some(prompt.to_owned()),
-                matched_phrases: matched,
+                degraded: verdict == VERDICT_DEGRADED,
+                reasoning_content: None,
+                prompt_used: None,
                 suspension_released: false,
+                verdict: verdict.clone(),
+                detector: DETECTOR.to_owned(),
+                margin,
+                claimed_model: Some(context.claimed_model.to_owned()),
+                bank_id: Some(BANK_ID.to_owned()),
+                probe_payload: Some(Value::Array(payload)),
             })
             .await
             .map_err(store_error)?;
-        Ok(Some(degraded))
+        let revision = self
+            .reconcile_suspension(
+                account_id,
+                target,
+                &verdict,
+                previous.as_deref(),
+                context.enforcement,
+                context.round_id,
+            )
+            .await?;
+        Ok(Some((verdict, revision)))
     }
 
     async fn execute_probe(
@@ -371,40 +374,102 @@ impl IntelligenceDetectionTask {
         provider: &dyn ProviderAdmin,
         account_id: &ProviderAccountId,
         target: &DetectionTarget,
-        upstream_model: &UpstreamModelId,
-        prompt: &str,
-        reasoning_effort: &str,
-    ) -> Result<AccountProbeResult, DetectionProbeFailure> {
-        let operation = provider
-            .intelligence_detection_operation(upstream_model, prompt, reasoning_effort)
-            .map_err(DetectionProbeFailure::Build)?;
-        self.probe
+        context: &ProbeContext<'_>,
+        challenge: FingerprintChallenge,
+    ) -> ProbeSample {
+        let operation = match provider
+            .intelligence_detection_operation(context.upstream_model, challenge.prompt)
+        {
+            Ok(operation) => operation,
+            Err(error) => {
+                return ProbeSample {
+                    payload: failure_payload(
+                        challenge,
+                        DetectionProbeFailure::Build(error).safe_message(),
+                    ),
+                    scores: None,
+                };
+            }
+        };
+        let result = self
+            .probe
             .probe(AccountProbeRequest {
                 account_id: account_id.clone(),
                 provider_kind: target.provider_kind.clone(),
-                upstream_model: upstream_model.clone(),
+                upstream_model: context.upstream_model.clone(),
                 operation,
             })
-            .await
-            .map_err(DetectionProbeFailure::Request)
+            .await;
+        match result {
+            Ok(AccountProbeResult { text, .. }) => {
+                let raw = text.concat();
+                match context.scorer.score(&raw, context.claimed_model) {
+                    Ok(scored) if scored.parsed_numbers > 0 => ProbeSample {
+                        payload: json!({
+                            "challenge_id": challenge.id,
+                            "ok": true,
+                            "parsed_count": scored.parsed_numbers,
+                            "raw": truncate_raw(&raw),
+                            "note": Value::Null,
+                        }),
+                        scores: Some(scored.scores),
+                    },
+                    Ok(scored) => ProbeSample {
+                        payload: json!({
+                            "challenge_id": challenge.id,
+                            "ok": false,
+                            "parsed_count": scored.parsed_numbers,
+                            "raw": truncate_raw(&raw),
+                            "note": "response contained no valid fingerprint numbers",
+                        }),
+                        scores: None,
+                    },
+                    Err(error) => ProbeSample {
+                        payload: failure_payload(challenge, error.to_string()),
+                        scores: None,
+                    },
+                }
+            }
+            Err(error) => ProbeSample {
+                payload: failure_payload(
+                    challenge,
+                    DetectionProbeFailure::Request(error).safe_message(),
+                ),
+                scores: None,
+            },
+        }
     }
 
-    /// 按检测结论翻转调度暂停；恢复只针对检测来源的暂停，人工暂停不受影响。
+    /// 按当前结论翻转调度暂停；恢复只针对检测来源，人工暂停不受影响。
     async fn reconcile_suspension(
         &self,
         account_id: &ProviderAccountId,
         target: &DetectionTarget,
-        degraded: bool,
+        verdict: &str,
+        previous_verdict: Option<&str>,
+        enforcement: &str,
         round_id: Uuid,
     ) -> Result<Option<Revision>, WorkerTaskError> {
-        let suspension = match (
-            degraded,
-            target.scheduling_suspended,
-            target.scheduling_suspended_by,
-        ) {
-            (true, false, _) => Some(SchedulingSuspensionSource::Detection),
-            (false, true, Some(SchedulingSuspensionSource::Detection)) => None,
-            _ => return Ok(None),
+        let suspension = match verdict {
+            VERDICT_NORMAL
+                if target.scheduling_suspended_by
+                    == Some(SchedulingSuspensionSource::Detection) =>
+            {
+                Some(None)
+            }
+            VERDICT_DEGRADED
+                if should_suspend_degraded(
+                    enforcement,
+                    previous_verdict,
+                    target.scheduling_suspended,
+                ) =>
+            {
+                Some(Some(SchedulingSuspensionSource::Detection))
+            }
+            _ => None,
+        };
+        let Some(suspension) = suspension else {
+            return Ok(None);
         };
         let context = MutationContext {
             actor: MutationActor::System,
@@ -437,7 +502,6 @@ impl IntelligenceDetectionTask {
         Ok(Some(result.config_revision))
     }
 
-    /// 发布已提交的 config revision，让后续请求感知调度状态变化。
     async fn publish_revision(&self, revision: Revision) {
         match ConfigRevision::new(revision.get()) {
             Ok(revision) => self.snapshot.publish_committed(revision).await,
@@ -463,128 +527,83 @@ fn is_within_interval(checked_at: DateTime<Utc>, interval: Duration) -> bool {
         || chrono::Duration::from_std(interval).is_ok_and(|limit| elapsed < limit)
 }
 
-/// 解析检测推理档位。显式配置原样优先；`auto` 从 catalog 声明中按稳定阶梯取顶，
-/// catalog 缺失或不含已知档位时退化到 `xhigh`。
-#[must_use]
-pub fn resolve_reasoning_effort(configured: &str, supported: &[String]) -> String {
-    let configured = configured.trim().to_ascii_lowercase();
-    if configured != "auto" {
-        return configured;
-    }
-    supported
-        .iter()
-        .filter_map(|effort| {
-            let effort = effort.trim().to_ascii_lowercase();
-            reasoning_effort_rank(&effort).map(|rank| (rank, effort))
-        })
-        .max_by_key(|(rank, _)| *rank)
-        .map_or_else(|| "xhigh".to_owned(), |(_, effort)| effort)
-}
-
-fn reasoning_effort_rank(effort: &str) -> Option<u8> {
-    match effort {
-        "none" => Some(0),
-        "minimal" => Some(1),
-        "low" => Some(2),
-        "medium" => Some(3),
-        "high" => Some(4),
-        "xhigh" => Some(5),
-        "max" => Some(6),
-        _ => None,
+fn normalized_enforcement(value: &str) -> &'static str {
+    if value.trim().eq_ignore_ascii_case(ENFORCEMENT_ENFORCE) {
+        ENFORCEMENT_ENFORCE
+    } else {
+        ENFORCEMENT_SHADOW
     }
 }
 
-/// 为一轮检测生成可复现的提示词；同一轮所有账号共享这一提示词。
-#[must_use]
-pub fn prompt_for_round(round_id: Uuid) -> String {
-    let animal = DETECTION_ANIMALS[(round_id.as_bytes()[0] as usize) % DETECTION_ANIMALS.len()];
-    DETECTION_PROMPT_TEMPLATE.replace("{animal}", animal)
+pub fn verdict_for_margin(margin: f64) -> &'static str {
+    if margin >= MARGIN_THRESHOLD {
+        VERDICT_NORMAL
+    } else if margin <= -MARGIN_THRESHOLD {
+        VERDICT_DEGRADED
+    } else {
+        VERDICT_UNDETERMINED
+    }
 }
 
-/// 返回响应（思考过程在前、最终答复在后）命中的降智指征。
-///
-/// 匹配前会移除所有 Unicode 空白并转为 ASCII 小写，以覆盖模型常见的中文
-/// 排版变体。除固定词根外，还接受“内嵌/内联”与 `svg` 相距不超过 10 个字符的
-/// 写法；返回值使用规范化标签，便于审计记录说明命中原因。
-#[must_use]
-pub fn matched_phrases(text: &str) -> Vec<String> {
-    let mut matched = Vec::new();
-    for segment in text.split('\0') {
-        for phrase in matched_phrases_in_segment(segment) {
-            if !matched.contains(&phrase) {
-                matched.push(phrase);
-            }
+pub fn should_suspend_degraded(
+    enforcement: &str,
+    previous_verdict: Option<&str>,
+    already_suspended: bool,
+) -> bool {
+    enforcement == ENFORCEMENT_ENFORCE
+        && previous_verdict == Some(VERDICT_DEGRADED)
+        && !already_suspended
+}
+
+fn aggregate_scores(
+    score_vectors: &[Vec<f64>],
+    scorer: &FingerprintScorer,
+    claimed_model: &str,
+) -> Result<(String, f64), model_fingerprint::FingerprintError> {
+    let width = score_vectors.first().map_or(0, Vec::len);
+    let mut scores = vec![0.0; width];
+    for vector in score_vectors {
+        for (sum, score) in scores.iter_mut().zip(vector) {
+            *sum += score;
         }
     }
-    matched
-}
-
-fn matched_phrases_in_segment(text: &str) -> Vec<String> {
-    let normalized = text
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let direct = ["内嵌svg", "内联svg", "内嵌的svg", "内联的svg", "inlinesvg"];
-    let mut matched = direct
+    let divisor = score_vectors.len() as f64;
+    for score in &mut scores {
+        *score /= divisor;
+    }
+    let claimed_index = scorer
+        .model_order()
         .iter()
-        .filter(|phrase| normalized.contains(**phrase))
-        .map(|phrase| (*phrase).to_owned())
-        .collect::<Vec<_>>();
-    for marker in ["内嵌", "内联", "inline", "embed"] {
-        if !matched.iter().any(|phrase| phrase.starts_with(marker))
-            && has_nearby_svg(&normalized, marker)
-        {
-            matched.push(format!("{marker}与svg间隔≤10字符"));
+        .position(|model| model == claimed_model)
+        .ok_or_else(|| {
+            model_fingerprint::FingerprintError::UnknownModel(claimed_model.to_owned())
+        })?;
+    let mut rank_one = 0;
+    let mut max_other = f64::NEG_INFINITY;
+    for (index, score) in scores.iter().copied().enumerate() {
+        if score > scores[rank_one] {
+            rank_one = index;
+        }
+        if index != claimed_index {
+            max_other = max_other.max(score);
         }
     }
-    matched
+    Ok((
+        scorer.model_order()[rank_one].clone(),
+        scores[claimed_index] - max_other,
+    ))
 }
 
-fn has_nearby_svg(text: &str, marker: &str) -> bool {
-    let marker_positions = text.match_indices(marker).map(|(index, _)| index);
-    marker_positions.into_iter().any(|marker_start| {
-        let marker_end = marker_start + marker.len();
-        let after_marker = text
-            .get(marker_end..)
-            .and_then(|suffix| suffix.find("svg").map(|index| marker_end + index));
-        let before_marker = text
-            .get(..marker_start)
-            .and_then(|prefix| prefix.rfind("svg"));
-        after_marker.is_some_and(|svg_start| text[marker_end..svg_start].chars().count() <= 10)
-            || before_marker.is_some_and(|svg_start| {
-                text[svg_start + "svg".len()..marker_start].chars().count() <= 10
-            })
+fn failure_payload(challenge: FingerprintChallenge, note: String) -> Value {
+    json!({
+        "challenge_id": challenge.id,
+        "ok": false,
+        "parsed_count": 0,
+        "raw": Value::Null,
+        "note": truncate_raw(&note),
     })
 }
 
-/// 从响应文本中提取 HTML 文档供检测记录回放；找不到 HTML 结构时保留全文。
-#[must_use]
-pub fn extract_html_document(text: &str) -> String {
-    if let Some(fenced) = extract_fenced_html(text) {
-        return fenced;
-    }
-    let haystack = text.to_ascii_lowercase();
-    let start = haystack
-        .find("<!doctype")
-        .or_else(|| haystack.find("<html"));
-    if let Some(start) = start {
-        let document = &text[start..];
-        let end = document
-            .to_ascii_lowercase()
-            .find("</html>")
-            .map_or(document.len(), |index| index + "</html>".len());
-        return document[..end].to_owned();
-    }
-    text.to_owned()
-}
-
-/// 提取第一个 ```html 围栏代码块的内容。
-fn extract_fenced_html(text: &str) -> Option<String> {
-    let start = text.find("```html")? + "```html".len();
-    let body = text.get(start..)?;
-    let body = body.strip_prefix('\n').unwrap_or(body);
-    let end = body.find("```").unwrap_or(body.len());
-    let content = body[..end].trim();
-    (!content.is_empty()).then(|| content.to_owned())
+fn truncate_raw(value: &str) -> String {
+    value.chars().take(8192).collect()
 }

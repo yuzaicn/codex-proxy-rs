@@ -607,7 +607,6 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
         .intelligence_detection_operation(
             &UpstreamModelId::new("gpt-5.4").expect("upstream model"),
             "Reply with exactly OK.",
-            "max",
         )
         .expect("detection operation");
     let Operation::Generate(detection_request) = detection_operation else {
@@ -615,24 +614,7 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
     };
     let detection_encoded = provider_openai::encode_generate_request(&detection_request, "gpt-5.4")
         .expect("official OpenAI detection request");
-    assert_eq!(
-        detection_encoded
-            .body()
-            .get("reasoning")
-            .and_then(Value::as_object)
-            .and_then(|reasoning| reasoning.get("effort"))
-            .and_then(Value::as_str),
-        Some("max")
-    );
-    assert_eq!(
-        detection_encoded
-            .body()
-            .get("reasoning")
-            .and_then(Value::as_object)
-            .and_then(|reasoning| reasoning.get("summary"))
-            .and_then(Value::as_str),
-        Some("detailed")
-    );
+    assert!(detection_encoded.body().get("reasoning").is_none());
 
     let account_id = account.id().clone();
     let quota = admin

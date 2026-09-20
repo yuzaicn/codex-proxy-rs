@@ -148,13 +148,14 @@ pub trait ProviderAdmin: Send + Sync {
         input_text: &str,
     ) -> Result<Operation, ProviderAdminError>;
 
-    /// 生成降智检测探测所需的 Provider-owned operation；检测请求可携带推理摘要等
-    /// 与普通连接测试不同的参数，Core 负责实际执行与落账。
+    /// 生成降智检测探测所需的 Provider-owned operation。
+    ///
+    /// ModelTrace 依赖模型默认采样行为，因此请求不能携带 reasoning/effort 字段，
+    /// 由 Provider 构造与普通无推理摘要连接测试同构的 payload。
     fn intelligence_detection_operation(
         &self,
         upstream_model: &UpstreamModelId,
         input_text: &str,
-        reasoning_effort: &str,
     ) -> Result<Operation, ProviderAdminError>;
 
     /// 返回该 Provider 实际持有的 Dashboard 上游身份画像。

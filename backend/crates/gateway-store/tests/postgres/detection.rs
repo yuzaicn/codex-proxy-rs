@@ -32,11 +32,15 @@ async fn mark_suspension_released_updates_round_recovered_count() {
             detection_round_id: round_id,
             account_id: "acct_detection_recovery".to_owned(),
             degraded: false,
-            html_content: None,
             reasoning_content: None,
             prompt_used: None,
-            matched_phrases: Vec::new(),
             suspension_released: false,
+            verdict: "normal".to_owned(),
+            detector: "fingerprint".to_owned(),
+            margin: Some(1.0),
+            claimed_model: Some("gpt-5.4".to_owned()),
+            bank_id: Some("modeltrace-bank-20260912".to_owned()),
+            probe_payload: None,
         })
         .await
         .expect("insert detection record");
