@@ -28,23 +28,38 @@ use super::runtime_settings::bump_config_revision_in_transaction;
 
 const ENTITY: &str = "intelligence detection";
 
-type ConfigRow = (bool, serde_json::Value, i32, String, String, DateTime<Utc>);
-type RecordRow = (
-    i64,
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    Option<String>,
+type ConfigRow = (
     bool,
+    serde_json::Value,
+    i32,
+    String,
+    String,
+    String,
     DateTime<Utc>,
-    bool,
-    Option<String>,
-    Option<String>,
-    Vec<String>,
 );
-type RoundRow = (String, DateTime<Utc>, i64, i64, Option<i64>);
+#[derive(Debug, sqlx::FromRow)]
+struct RecordRow {
+    id: i64,
+    detection_round_id: String,
+    account_id: String,
+    account_email: Option<String>,
+    account_name: String,
+    account_provider_kind: String,
+    account_plan_type: Option<String>,
+    scheduling_suspended: bool,
+    checked_at: DateTime<Utc>,
+    degraded: bool,
+    reasoning_content: Option<String>,
+    prompt_used: Option<String>,
+    matched_phrases: Vec<String>,
+    verdict: String,
+    detector: String,
+    margin: Option<f64>,
+    claimed_model: Option<String>,
+    bank_id: Option<String>,
+    probe_payload: Option<serde_json::Value>,
+}
+type RoundRow = (String, DateTime<Utc>, i64, i64, i64, i64, Option<i64>);
 type TargetRow = (String, String, bool, Option<String>);
 
 /// 降智检测配置与检测记录的 PostgreSQL adapter。
@@ -61,7 +76,7 @@ impl PgDetectionStore {
 
     async fn load_config(&self) -> StoreResult<Option<DetectionConfig>> {
         let row = sqlx::query_as::<_, ConfigRow>(
-            "select enabled, account_scope, interval_secs, model, reasoning_effort, updated_at
+            "select enabled, account_scope, interval_secs, model, reasoning_effort, enforcement, updated_at
              from intelligence_detection_configs order by id limit 1",
         )
         .fetch_optional(&self.pool)
@@ -93,7 +108,7 @@ impl PgDetectionStore {
                      reasoning_effort = $5,
                      updated_at = now()
                  where id = (select id from intelligence_detection_configs order by id limit 1)
-                 returning enabled, account_scope, interval_secs, model, reasoning_effort, updated_at",
+                 returning enabled, account_scope, interval_secs, model, reasoning_effort, enforcement, updated_at",
             )
             .bind(command.enabled)
             .bind(&scope)
@@ -109,7 +124,7 @@ impl PgDetectionStore {
                     "insert into intelligence_detection_configs
                     (enabled, account_scope, interval_secs, model, reasoning_effort)
                      values ($1, $2, $3, $4, $5)
-                     returning enabled, account_scope, interval_secs, model, reasoning_effort, updated_at",
+                    returning enabled, account_scope, interval_secs, model, reasoning_effort, enforcement, updated_at",
                 )
                 .bind(command.enabled)
                 .bind(&scope)
@@ -148,10 +163,25 @@ impl PgDetectionStore {
         let rows = match query.detection_round_id {
             Some(round_id) => {
                 sqlx::query_as::<_, RecordRow>(
-                    "select r.id, r.detection_round_id::text, r.account_id,
-                            a.email, a.name, a.provider_kind, a.plan_type,
-                            a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content, r.prompt_used, r.matched_phrases
+                    "select r.id,
+                            r.detection_round_id::text as detection_round_id,
+                            r.account_id,
+                            a.email as account_email,
+                            a.name as account_name,
+                            a.provider_kind as account_provider_kind,
+                            a.plan_type as account_plan_type,
+                            a.scheduling_suspended,
+                            r.checked_at,
+                            r.degraded,
+                            r.reasoning_content,
+                            r.prompt_used,
+                            coalesce(r.matched_phrases, '{}'::text[]) as matched_phrases,
+                            r.verdict,
+                            r.detector,
+                            r.margin,
+                            r.claimed_model,
+                            r.bank_id,
+                            r.probe_payload
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      where r.detection_round_id = $1::uuid
@@ -165,10 +195,25 @@ impl PgDetectionStore {
             }
             None => {
                 sqlx::query_as::<_, RecordRow>(
-                    "select r.id, r.detection_round_id::text, r.account_id,
-                            a.email, a.name, a.provider_kind, a.plan_type,
-                            a.scheduling_suspended, r.checked_at, r.degraded,
-                            r.reasoning_content, r.prompt_used, r.matched_phrases
+                    "select r.id,
+                            r.detection_round_id::text as detection_round_id,
+                            r.account_id,
+                            a.email as account_email,
+                            a.name as account_name,
+                            a.provider_kind as account_provider_kind,
+                            a.plan_type as account_plan_type,
+                            a.scheduling_suspended,
+                            r.checked_at,
+                            r.degraded,
+                            r.reasoning_content,
+                            r.prompt_used,
+                            coalesce(r.matched_phrases, '{}'::text[]) as matched_phrases,
+                            r.verdict,
+                            r.detector,
+                            r.margin,
+                            r.claimed_model,
+                            r.bank_id,
+                            r.probe_payload
                      from intelligence_detection_records r
                      join provider_accounts a on a.id = r.account_id
                      order by r.checked_at desc, r.id desc limit $1 offset $2",
@@ -186,8 +231,12 @@ impl PgDetectionStore {
         sqlx::query_as::<_, RoundRow>(
             "select detection_round_id::text,
                     max(checked_at),
-                    count(*) filter (where degraded),
-                    count(*) filter (where not degraded),
+                    count(*) filter (where verdict = 'degraded'
+                                      or (verdict = 'legacy' and degraded)),
+                    count(*) filter (where verdict = 'normal'
+                                      or (verdict = 'legacy' and not degraded)),
+                    count(*) filter (where verdict = 'undetermined'),
+                    count(*) filter (where verdict = 'unverifiable'),
                     case when count(suspension_released) = 0 then null
                          else count(*) filter (where suspension_released) end
              from intelligence_detection_records
@@ -255,8 +304,11 @@ impl PgDetectionStore {
     async fn insert_record(&self, record: &NewDetectionRecord) -> StoreResult<()> {
         sqlx::query(
             "insert into intelligence_detection_records
-             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used, matched_phrases, suspension_released)
-             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8)",
+             (detection_round_id, account_id, degraded, html_content, reasoning_content, prompt_used,
+              matched_phrases, suspension_released, verdict, detector, margin, claimed_model,
+              bank_id, probe_payload)
+             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8,
+                     coalesce($9, 'legacy'), coalesce($10, 'legacy'), $11, $12, $13, $14)",
         )
         .bind(record.detection_round_id.to_string())
         .bind(&record.account_id)
@@ -266,6 +318,12 @@ impl PgDetectionStore {
         .bind(record.prompt_used.as_deref())
         .bind(record.matched_phrases.as_slice())
         .bind(record.suspension_released)
+        .bind(record.verdict.as_deref())
+        .bind(record.detector.as_deref())
+        .bind(record.margin)
+        .bind(record.claimed_model.as_deref())
+        .bind(record.bank_id.as_deref())
+        .bind(record.probe_payload.as_ref())
         .execute(&self.pool)
         .await
         .map_err(|_| postgres_unavailable("insert detection record"))?;
@@ -376,7 +434,7 @@ impl DetectionStore for PgDetectionStore {
 }
 
 fn detection_config_from_row(row: ConfigRow) -> StoreResult<DetectionConfig> {
-    let (enabled, scope, interval_secs, model, reasoning_effort, updated_at) = row;
+    let (enabled, scope, interval_secs, model, reasoning_effort, enforcement, updated_at) = row;
     Ok(DetectionConfig {
         enabled,
         account_scope: parse_account_scope(&scope)?,
@@ -384,52 +442,56 @@ fn detection_config_from_row(row: ConfigRow) -> StoreResult<DetectionConfig> {
             .map_err(|_| invalid("negative detection interval"))?,
         model,
         reasoning_effort,
+        enforcement,
         updated_at,
     })
 }
 
 fn detection_record_from_row(row: RecordRow) -> StoreResult<DetectionRecord> {
-    let (
-        id,
-        detection_round_id,
-        account_id,
-        account_email,
-        account_name,
-        account_provider_kind,
-        account_plan_type,
-        scheduling_suspended,
-        checked_at,
-        degraded,
-        reasoning_content,
-        prompt_used,
-        matched_phrases,
-    ) = row;
     Ok(DetectionRecord {
-        id,
-        detection_round_id: parse_round_id(&detection_round_id)?,
-        account_id,
-        account_email,
-        account_name: Some(account_name),
-        account_provider_kind,
-        account_plan_type,
+        id: row.id,
+        detection_round_id: parse_round_id(&row.detection_round_id)?,
+        account_id: row.account_id,
+        account_email: row.account_email,
+        account_name: Some(row.account_name),
+        account_provider_kind: row.account_provider_kind,
+        account_plan_type: row.account_plan_type,
         account_plan_type_display: None,
-        checked_at,
-        degraded,
-        scheduling_suspended,
-        reasoning_content,
-        prompt_used,
-        matched_phrases,
+        checked_at: row.checked_at,
+        degraded: row.degraded,
+        scheduling_suspended: row.scheduling_suspended,
+        reasoning_content: row.reasoning_content,
+        prompt_used: row.prompt_used,
+        matched_phrases: row.matched_phrases,
+        verdict: row.verdict,
+        detector: row.detector,
+        margin: row.margin,
+        claimed_model: row.claimed_model,
+        bank_id: row.bank_id,
+        probe_payload: row.probe_payload,
     })
 }
 
 fn detection_round_from_row(row: RoundRow) -> StoreResult<DetectionRound> {
-    let (detection_round_id, checked_at, degraded_count, normal_count, recovered_count) = row;
+    let (
+        detection_round_id,
+        checked_at,
+        degraded_count,
+        normal_count,
+        undetermined_count,
+        unverifiable_count,
+        recovered_count,
+    ) = row;
     Ok(DetectionRound {
         detection_round_id: parse_round_id(&detection_round_id)?,
         checked_at,
         degraded_count: u64::try_from(degraded_count)
             .map_err(|_| invalid("negative degraded count"))?,
         normal_count: u64::try_from(normal_count).map_err(|_| invalid("negative normal count"))?,
+        undetermined_count: u64::try_from(undetermined_count)
+            .map_err(|_| invalid("negative undetermined count"))?,
+        unverifiable_count: u64::try_from(unverifiable_count)
+            .map_err(|_| invalid("negative unverifiable count"))?,
         recovered_count: recovered_count
             .map(u64::try_from)
             .transpose()

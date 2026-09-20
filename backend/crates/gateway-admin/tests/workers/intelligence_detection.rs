@@ -126,6 +126,7 @@ impl DetectionFixture {
                 interval_secs: 3600,
                 model: "test-model".to_owned(),
                 reasoning_effort: "auto".to_owned(),
+                enforcement: "shadow".to_owned(),
                 updated_at: Utc::now(),
             },
             targets,

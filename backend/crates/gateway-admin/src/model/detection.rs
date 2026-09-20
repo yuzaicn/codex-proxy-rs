@@ -24,6 +24,8 @@ pub struct DetectionConfig {
     pub interval_secs: u32,
     pub model: String,
     pub reasoning_effort: String,
+    /// Whether fingerprint verdicts can change scheduling (`shadow` or `enforce`).
+    pub enforcement: String,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -37,6 +39,7 @@ impl DetectionConfig {
             interval_secs: 3600,
             model: String::new(),
             reasoning_effort: "auto".to_owned(),
+            enforcement: "shadow".to_owned(),
             updated_at,
         }
     }
@@ -60,7 +63,7 @@ pub struct DetectionConfigMutation {
 }
 
 /// 一条检测记录及其账号身份投影。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DetectionRecord {
     pub id: i64,
     pub detection_round_id: Uuid,
@@ -80,6 +83,13 @@ pub struct DetectionRecord {
     pub prompt_used: Option<String>,
     /// 触发降智结论的可审计标签。
     pub matched_phrases: Vec<String>,
+    /// Persisted detector decision. Legacy rows use `legacy` for both fields.
+    pub verdict: String,
+    pub detector: String,
+    pub margin: Option<f64>,
+    pub claimed_model: Option<String>,
+    pub bank_id: Option<String>,
+    pub probe_payload: Option<serde_json::Value>,
 }
 
 /// 检测记录分页查询；页码从 1 开始。
@@ -97,6 +107,8 @@ pub struct DetectionRound {
     pub checked_at: DateTime<Utc>,
     pub degraded_count: u64,
     pub normal_count: u64,
+    pub undetermined_count: u64,
+    pub unverifiable_count: u64,
     pub recovered_count: Option<u64>,
 }
 
@@ -110,7 +122,7 @@ pub struct DetectionTarget {
 }
 
 /// 检测 Worker 写入的一条新检测记录；`checked_at` 由存储层落库时间决定。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewDetectionRecord {
     pub detection_round_id: Uuid,
     pub account_id: String,
@@ -120,4 +132,12 @@ pub struct NewDetectionRecord {
     pub prompt_used: Option<String>,
     pub matched_phrases: Vec<String>,
     pub suspension_released: bool,
+    /// Optional fingerprint fields. `None` preserves the migration's legacy defaults
+    /// while the old worker is being replaced by the fingerprint worker.
+    pub verdict: Option<String>,
+    pub detector: Option<String>,
+    pub margin: Option<f64>,
+    pub claimed_model: Option<String>,
+    pub bank_id: Option<String>,
+    pub probe_payload: Option<serde_json::Value>,
 }
