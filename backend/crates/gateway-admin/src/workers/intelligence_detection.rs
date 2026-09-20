@@ -339,6 +339,12 @@ impl IntelligenceDetectionTask {
                         prompt_used: Some(prompt.to_owned()),
                         matched_phrases: Vec::new(),
                         suspension_released: false,
+                        verdict: None,
+                        detector: None,
+                        margin: None,
+                        claimed_model: None,
+                        bank_id: None,
+                        probe_payload: None,
                     })
                     .await
                     .map_err(store_error)?;
@@ -360,6 +366,12 @@ impl IntelligenceDetectionTask {
                 prompt_used: Some(prompt.to_owned()),
                 matched_phrases: matched,
                 suspension_released: false,
+                verdict: None,
+                detector: None,
+                margin: None,
+                claimed_model: None,
+                bank_id: None,
+                probe_payload: None,
             })
             .await
             .map_err(store_error)?;
