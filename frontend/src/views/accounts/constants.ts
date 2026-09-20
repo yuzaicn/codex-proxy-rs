@@ -11,6 +11,8 @@ export interface AccountQuotaWindowEntry {
   windows: AccountQuotaWindow[]
 }
 
+export const accountTimelineLabels = ['最后使用', '创建时间', '更新时间'] as const
+
 const quotaGroupOrder = new Map([
   ['shortTerm', 0],
   ['monthly', 1],
@@ -61,7 +63,7 @@ export const accountColumns = defineTableColumns<AccountRow>([
   { key: 'groups', label: '账号分组', kind: 'status', minWidth: 64 },
   {
     key: 'lastUsedAt',
-    label: '最后使用',
+    label: '时间',
     kind: 'datetime',
     size: 'xl',
     minWidth: 132,

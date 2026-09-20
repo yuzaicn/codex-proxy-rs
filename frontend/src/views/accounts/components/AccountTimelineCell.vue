@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
+import { accountTimelineLabels } from '../constants'
 
 defineProps<{
   lastUsedAt: string | null
@@ -11,19 +12,19 @@ defineProps<{
 <template>
   <dl class="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)] gap-x-1 text-[10px] leading-3 tabular-nums">
     <dt class="font-sans font-emphasis text-cp-text-quaternary">
-      最后使用
+      {{ accountTimelineLabels[0] }}
     </dt>
     <dd class="m-0 min-w-0 whitespace-normal text-cp-text-secondary">
       <LastUsedAtCell :value="lastUsedAt" />
     </dd>
     <dt class="font-sans font-emphasis text-cp-text-quaternary">
-      创建时间
+      {{ accountTimelineLabels[1] }}
     </dt>
     <dd class="m-0 min-w-0 whitespace-normal text-cp-text-secondary" :title="addedAtDisplay">
       {{ addedAtDisplay }}
     </dd>
     <dt class="font-sans font-emphasis text-cp-text-quaternary">
-      更新时间
+      {{ accountTimelineLabels[2] }}
     </dt>
     <dd class="m-0 min-w-0 whitespace-normal text-cp-text-secondary" :title="updatedAtDisplay">
       {{ updatedAtDisplay }}

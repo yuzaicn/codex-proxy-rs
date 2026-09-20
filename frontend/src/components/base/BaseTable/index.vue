@@ -188,11 +188,12 @@ function columnAriaSort(column: ResolvedTableColumn<Row>) {
 
 function sortButtonLabel(column: ResolvedTableColumn<Row>) {
   const direction = columnSortDirection(column)
+  const label = columnSortKey(column) === 'lastUsedAt' ? '最后使用' : column.label || column.key
   if (!direction)
-    return `${column.label || column.key}：升序排列`
+    return `${label}：升序排列`
   if (direction === 'asc')
-    return `${column.label || column.key}：降序排列`
-  return `${column.label || column.key}：取消排序`
+    return `${label}：降序排列`
+  return `${label}：取消排序`
 }
 </script>
 
