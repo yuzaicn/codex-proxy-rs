@@ -25,11 +25,6 @@ use crate::model::{
         ClientKeyListQuery, ClientKeyPage, ClientKeyRecord, ClientKeySecret, DeleteClientKey,
         NewClientKey, SetClientKeyEnabled, UpdateClientKey,
     },
-    detection::{
-        DetectionAccountScope, DetectionConfig, DetectionConfigMutation, DetectionRecord,
-        DetectionRecordQuery, DetectionRound, DetectionTarget, NewDetectionRecord,
-        ReplaceDetectionConfig,
-    },
     observability::{
         DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
         OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange, UsageCalculatedBillingFact,
@@ -362,52 +357,6 @@ pub trait ObservabilityStore: Send + Sync {
     async fn list_ops_errors(&self, query: OpsErrorQuery) -> AdminStoreResult<OpsErrorPage>;
 }
 
-/// 降智检测配置与检测记录读写。
-#[async_trait]
-pub trait DetectionStore: Send + Sync {
-    /// 读取全局检测配置；配置行尚未写入时返回 `None`。
-    async fn load_detection_config(&self) -> AdminStoreResult<Option<DetectionConfig>>;
-
-    async fn replace_detection_config(
-        &self,
-        command: ReplaceDetectionConfig,
-        context: &MutationContext,
-    ) -> AdminStoreResult<DetectionConfigMutation>;
-
-    /// 分页读取检测记录（含账号身份投影），按检测时间倒排。
-    async fn list_detection_records(
-        &self,
-        query: DetectionRecordQuery,
-    ) -> AdminStoreResult<Vec<DetectionRecord>>;
-
-    /// 读取最近的检测批次聚合，按检测时间倒排。
-    async fn list_detection_rounds(&self, limit: u32) -> AdminStoreResult<Vec<DetectionRound>>;
-
-    /// 读取最近一条检测记录的落库时间；没有成功落库的轮次时返回 `None`。
-    async fn latest_detection_checked_at(&self) -> AdminStoreResult<Option<DateTime<Utc>>>;
-
-    /// 检测 Worker 按账号范围读取待探测账号及其调度暂停事实。
-    async fn list_detection_targets(
-        &self,
-        scope: &DetectionAccountScope,
-    ) -> AdminStoreResult<Vec<DetectionTarget>>;
-
-    /// 读取单条检测记录的 HTML 原文；记录不存在或 `html_content` 为 NULL 时返回 `None`。
-    async fn load_detection_record_html(&self, record_id: i64) -> AdminStoreResult<Option<String>>;
-
-    /// 检测 Worker 追加一条检测记录；观测数据不参与配置 revision 与审计。
-    async fn insert_detection_record(&self, record: NewDetectionRecord) -> AdminStoreResult<()>;
-
-    /// 标记本轮实际解除检测来源调度暂停的记录。
-    async fn mark_suspension_released(
-        &self,
-        _round_id: uuid::Uuid,
-        _account_id: &str,
-    ) -> AdminStoreResult<()> {
-        Ok(())
-    }
-}
-
 /// Runtime settings 与管理员 API Key 写入。
 #[async_trait]
 pub trait SettingsStore: Send + Sync {
@@ -573,7 +522,6 @@ pub struct AdminStorePorts {
     client_keys: Arc<dyn ClientKeyStore>,
     observability: Arc<dyn ObservabilityStore>,
     settings: Arc<dyn SettingsStore>,
-    detection: Arc<dyn DetectionStore>,
     reset_detection: Arc<dyn ResetDetectionStore>,
     backup: BackupStorePorts,
 }
@@ -586,7 +534,6 @@ impl AdminStorePorts {
         client_keys: Arc<dyn ClientKeyStore>,
         observability: Arc<dyn ObservabilityStore>,
         settings: Arc<dyn SettingsStore>,
-        detection: Arc<dyn DetectionStore>,
         backup: BackupStorePorts,
     ) -> Self {
         Self {
@@ -595,7 +542,6 @@ impl AdminStorePorts {
             client_keys,
             observability,
             settings,
-            detection,
             reset_detection: Arc::new(UnavailableResetDetectionStore),
             backup,
         }
@@ -609,19 +555,10 @@ impl AdminStorePorts {
         client_keys: Arc<dyn ClientKeyStore>,
         observability: Arc<dyn ObservabilityStore>,
         settings: Arc<dyn SettingsStore>,
-        detection: Arc<dyn DetectionStore>,
         reset_detection: Arc<dyn ResetDetectionStore>,
         backup: BackupStorePorts,
     ) -> Self {
-        let mut ports = Self::new(
-            accounts,
-            auth,
-            client_keys,
-            observability,
-            settings,
-            detection,
-            backup,
-        );
+        let mut ports = Self::new(accounts, auth, client_keys, observability, settings, backup);
         ports.reset_detection = reset_detection;
         ports
     }
@@ -664,11 +601,6 @@ impl AdminStorePorts {
     #[must_use]
     pub fn settings(&self) -> Arc<dyn SettingsStore> {
         self.settings.clone()
-    }
-
-    #[must_use]
-    pub fn detection(&self) -> Arc<dyn DetectionStore> {
-        self.detection.clone()
     }
 
     #[must_use]

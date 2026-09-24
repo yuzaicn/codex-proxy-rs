@@ -13,7 +13,6 @@ pub mod accounts;
 pub mod auth;
 pub mod backups;
 pub mod client_keys;
-pub mod detection;
 mod extract;
 pub mod observability;
 pub mod presenter;
@@ -42,7 +41,6 @@ where
         .merge(auth::router::<S>())
         .merge(backups::router::<S>())
         .merge(client_keys::router::<S>())
-        .merge(detection::router::<S>())
         .merge(observability::router::<S>())
         .merge(settings::router::<S>())
         .merge(reset_detection::router::<S>())

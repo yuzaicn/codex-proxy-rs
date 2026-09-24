@@ -96,7 +96,7 @@ pub struct AccountRecord {
     pub access_token_expires_at: Option<DateTime<Utc>>,
     pub next_refresh_at: Option<DateTime<Utc>>,
     pub enabled: bool,
-    /// 调度暂停事实；与人工 `enabled` 正交，由手动开关或检测 Worker 翻转。
+    /// 调度暂停事实；与人工 `enabled` 正交，由手动开关翻转。
     pub scheduling_suspended: bool,
     pub concurrency_limit: Option<AccountConcurrencyLimit>,
     pub weight: AccountWeight,

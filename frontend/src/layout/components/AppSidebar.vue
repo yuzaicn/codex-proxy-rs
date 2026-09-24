@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  ActivitySquare,
   ArrowUpCircle,
   ChartNoAxesColumn,
   FolderTree,
@@ -28,7 +27,6 @@ import BaseIconButton from '@/components/base/BaseIconButton.vue'
 import BaseMotionIcon from '@/components/base/BaseMotionIcon.vue'
 import BaseScrollbar from '@/components/base/BaseScrollbar.vue'
 import { useAuthStore } from '@/stores/modules/auth'
-import { useSettingsStore } from '@/stores/modules/settings'
 import { useSystemUpdateStore } from '@/stores/modules/system-update'
 import { useThemeStore } from '@/stores/modules/theme'
 
@@ -53,11 +51,9 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const systemUpdateStore = useSystemUpdateStore()
-const settingsStore = useSettingsStore()
 const themeStore = useThemeStore()
 const { version, hasUpdate } = storeToRefs(systemUpdateStore)
 const { effectiveTheme } = storeToRefs(themeStore)
-const { detectionEnabled } = storeToRefs(settingsStore)
 const { toggleTheme } = themeStore
 const preferredMotion = usePreferredReducedMotion()
 
@@ -68,9 +64,6 @@ const navItems = computed(() => [
   { label: '分组管理', icon: FolderTree, path: '/account-groups' },
   { label: 'API 密钥', icon: KeyRound, path: '/api-keys' },
   { label: '使用统计', icon: ChartNoAxesColumn, path: '/usage' },
-  ...(detectionEnabled.value
-    ? [{ label: '检测记录', icon: ActivitySquare, path: '/detection' }]
-    : []),
   { label: '主题设置', icon: Palette, path: '/theme' },
   { label: '系统设置', icon: Settings, path: '/settings' },
 ])
@@ -262,7 +255,6 @@ function animateNavSignal() {
 }
 
 onMounted(() => {
-  void settingsStore.loadDetectionConfig().catch(() => undefined)
   gsap.set(sidebarEl.value, {
     width: sidebarWidth.value,
     flexBasis: sidebarWidth.value,

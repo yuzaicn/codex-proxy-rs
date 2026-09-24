@@ -25,10 +25,9 @@ pub mod workers;
 pub use use_case::{
     account_groups::AccountGroupService, accounts::AccountsService, auth::AuthService,
     backup::BackupService, client_distribution::ClientDistributionService,
-    client_keys::ClientKeyService, detection::DetectionService,
-    observability::ObservabilityService, openai::OpenAiService, proxies::ProxiesService,
-    reset_detection::ResetDetectionService, settings::SettingsService, system::SystemService,
-    xai::XaiService,
+    client_keys::ClientKeyService, observability::ObservabilityService, openai::OpenAiService,
+    proxies::ProxiesService, reset_detection::ResetDetectionService, settings::SettingsService,
+    system::SystemService, xai::XaiService,
 };
 
 use model::{AdminError, AdminErrorKind};
@@ -42,9 +41,9 @@ use use_case::{
     account_groups::DefaultAccountGroupService, accounts::DefaultAccountsService,
     auth::DefaultAuthService, backup::DefaultBackupService,
     client_distribution::DefaultClientDistributionService, client_keys::DefaultClientKeyService,
-    detection::DefaultDetectionService, observability::DefaultObservabilityService,
-    openai::DefaultOpenAiService, reset_detection::DefaultResetDetectionService,
-    settings::DefaultSettingsService, system::DefaultSystemService, xai::DefaultXaiService,
+    observability::DefaultObservabilityService, openai::DefaultOpenAiService,
+    reset_detection::DefaultResetDetectionService, settings::DefaultSettingsService,
+    system::DefaultSystemService, xai::DefaultXaiService,
 };
 
 const OPENAI_PROVIDER_KIND: &str = "openai";
@@ -62,15 +61,7 @@ const WEAK_INITIAL_PASSWORDS: &[&str] = &[
 ];
 
 const BACKUP_WORKER_OWNER: &str = "backup";
-const DETECTION_WORKER_OWNER: &str = "detection";
 const RESET_DETECTION_WORKER_OWNER: &str = "reset-detection";
-/// 检测 Worker 的固定唤醒间隔；真实轮次节奏由配置里的 `interval_secs` 在任务内部把关。
-const DETECTION_WORKER_TICK: Duration = Duration::from_secs(60);
-const DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const DETECTION_WORKER_MAXIMUM_BACKOFF: Duration = Duration::from_secs(60);
-/// 降智检测 worker 的 leader lease 生命周期；长轮次由 Host 按 renewal 间隔续租。
-const DETECTION_WORKER_LEASE_TTL: Duration = Duration::from_secs(30);
-const DETECTION_WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(10);
 /// 重置卡配置最短为 30 秒；固定 tick 使后台修改在一个最短周期内生效。
 const RESET_DETECTION_WORKER_TICK: Duration = Duration::from_secs(30);
 const RESET_DETECTION_WORKER_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -178,7 +169,6 @@ pub struct AdminServices {
     observability: Arc<dyn ObservabilityService>,
     settings: Arc<dyn SettingsService>,
     reset_detection: Arc<dyn ResetDetectionService>,
-    detection: Arc<dyn DetectionService>,
     system: Arc<dyn SystemService>,
     openai: Arc<dyn OpenAiService>,
     xai: Arc<dyn XaiService>,
@@ -229,11 +219,6 @@ impl AdminServices {
     #[must_use]
     pub fn reset_detection(&self) -> &dyn ResetDetectionService {
         self.reset_detection.as_ref()
-    }
-
-    #[must_use]
-    pub fn detection(&self) -> &dyn DetectionService {
-        self.detection.as_ref()
     }
 
     #[must_use]
@@ -361,11 +346,6 @@ pub async fn initialize(
             store.reset_detection(),
             snapshot.clone(),
         )),
-        detection: Arc::new(DefaultDetectionService::new(
-            store.detection(),
-            snapshot.clone(),
-            registry.clone(),
-        )),
         system: Arc::new(DefaultSystemService::new(system)),
         openai: Arc::new(DefaultOpenAiService::new(
             openai,
@@ -381,13 +361,6 @@ pub async fn initialize(
         )),
         backups,
     };
-    let detection_task = workers::intelligence_detection::IntelligenceDetectionTask::new(
-        store.detection(),
-        store.accounts(),
-        registry,
-        probe,
-        snapshot,
-    );
     let reset_detection_task = workers::reset_detection::ResetDetectionTask::new(
         store.reset_detection(),
         store.accounts(),
@@ -395,7 +368,6 @@ pub async fn initialize(
         accounts,
     );
     let mut worker_contributions = backup_worker_contribution(backup_task)?;
-    worker_contributions.extend(detection_worker_contribution(detection_task)?);
     worker_contributions.extend(reset_detection_worker_contribution(reset_detection_task)?);
     Ok(AdminBundle {
         services,
@@ -419,34 +391,6 @@ fn backup_worker_contribution(
         },
     )
     .map_err(|_| AdminError::internal("备份 Worker 注册信息不合法"))?;
-    Ok(vec![WorkerContribution::Registration(registration)])
-}
-
-/// 降智检测 Worker 注册：多实例只允许持有 leader lease 的实例执行，owner 固定为 `detection`。
-fn detection_worker_contribution(
-    task: workers::intelligence_detection::IntelligenceDetectionTask,
-) -> Result<Vec<WorkerContribution>, AdminError> {
-    let id = WorkerId::try_new(WorkerKind::IntelligenceDetection, DETECTION_WORKER_OWNER)
-        .map_err(|_| AdminError::internal("降智检测 Worker ID 不合法"))?;
-    let schedule = WorkerSchedule::try_new(
-        DETECTION_WORKER_TICK,
-        DETECTION_WORKER_INITIAL_BACKOFF,
-        DETECTION_WORKER_MAXIMUM_BACKOFF,
-        DETECTION_WORKER_LEASE_TTL,
-        DETECTION_WORKER_LEASE_RENEWAL,
-    )
-    .map_err(|_| AdminError::internal("降智检测 Worker 调度参数不合法"))?;
-    let lease = WorkerLeaseRequest::try_new(id.clone(), DETECTION_WORKER_LEASE_TTL)
-        .map_err(|_| AdminError::internal("降智检测 Worker 租约参数不合法"))?;
-    let registration = WorkerRegistration::try_new(
-        id,
-        WorkerRunnable::Scheduled {
-            schedule,
-            lease: Some(lease),
-            task: Box::new(task),
-        },
-    )
-    .map_err(|_| AdminError::internal("降智检测 Worker 注册信息不合法"))?;
     Ok(vec![WorkerContribution::Registration(registration)])
 }
 

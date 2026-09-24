@@ -258,7 +258,7 @@ pub struct AccountView {
     /// 最近一次失败的上游错误描述；仅错误状态存在。
     pub error_message: Option<String>,
     pub enabled: bool,
-    /// 调度暂停事实；与 `enabled` 正交，由手动开关或检测 Worker 翻转。
+    /// 调度暂停事实；与 `enabled` 正交，由手动开关翻转。
     pub scheduling_suspended: bool,
     pub concurrency_limit: Option<u32>,
     pub weight: u16,
