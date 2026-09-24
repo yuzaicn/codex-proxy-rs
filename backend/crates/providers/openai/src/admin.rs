@@ -217,15 +217,6 @@ impl ProviderAdmin for OpenAiAdminProvider {
         build_connection_test_operation(upstream_model, input_text)
     }
 
-    fn intelligence_detection_operation(
-        &self,
-        upstream_model: &UpstreamModelId,
-        input_text: &str,
-        reasoning_effort: &str,
-    ) -> Result<Operation, ProviderAdminError> {
-        build_detection_operation(upstream_model, input_text, reasoning_effort)
-    }
-
     fn dashboard_wire_profile(&self) -> Option<DashboardWireProfile> {
         let profile = self.profile.snapshot();
         let release = self.desktop_release.snapshot();
@@ -1291,22 +1282,12 @@ fn build_connection_test_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
 ) -> Result<Operation, ProviderAdminError> {
-    build_operation(upstream_model, input_text, false, "")
-}
-
-fn build_detection_operation(
-    upstream_model: &UpstreamModelId,
-    input_text: &str,
-    reasoning_effort: &str,
-) -> Result<Operation, ProviderAdminError> {
-    build_operation(upstream_model, input_text, true, reasoning_effort)
+    build_operation(upstream_model, input_text)
 }
 
 fn build_operation(
     upstream_model: &UpstreamModelId,
     input_text: &str,
-    include_reasoning_summary: bool,
-    reasoning_effort: &str,
 ) -> Result<Operation, ProviderAdminError> {
     let mut body = Map::new();
     body.insert(
@@ -1323,15 +1304,6 @@ fn build_operation(
     );
     body.insert("stream".to_owned(), Value::Bool(true));
     body.insert("store".to_owned(), Value::Bool(false));
-    if include_reasoning_summary {
-        // Responses only emits visible reasoning deltas when a summary mode is
-        // requested. Diagnostic probes must opt in so the detection worker can
-        // inspect the model's reasoning instead of only its final text.
-        body.insert(
-            "reasoning".to_owned(),
-            serde_json::json!({"effort": reasoning_effort, "summary": "detailed"}),
-        );
-    }
     let payload = ProtocolPayload::json_object("openai", body)
         .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
     Ok(Operation::Generate(GenerateRequest::from_protocol_payload(

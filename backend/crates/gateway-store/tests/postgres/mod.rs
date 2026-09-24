@@ -17,7 +17,6 @@ mod admission_recovery;
 mod backup;
 mod client_budgets;
 mod client_keys;
-mod detection;
 mod execution;
 mod execution_buffer;
 mod health;

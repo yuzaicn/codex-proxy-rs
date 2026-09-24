@@ -58,7 +58,7 @@ use gateway_admin::{
         store::{
             AccountGroupStore, AccountRuntimeStore, AccountStore, AdminAccountStorePorts,
             AdminStoreError, AdminStoreErrorKind, AdminStorePorts, AdminStoreResult, AuthStore,
-            ClientKeyStore, DetectionStore, ObservabilityStore, SettingsStore,
+            ClientKeyStore, ObservabilityStore, SettingsStore,
         },
         system::{
             SystemOperationError, SystemOperationErrorKind, SystemOperations,
@@ -79,7 +79,6 @@ mod account_groups;
 mod accounts;
 mod auth;
 mod client_keys;
-mod detection;
 mod errors;
 mod observability;
 mod proxies;
@@ -140,7 +139,6 @@ impl AdminTestFixture {
             client_keys.clone(),
             unused.clone(),
             settings.clone(),
-            unused,
             gateway_admin::ports::backup::BackupStorePorts::disabled(),
         );
         let providers: Vec<Arc<dyn ProviderAdmin>> = vec![
@@ -849,61 +847,6 @@ impl AccountStore for UnusedStore {
 }
 
 #[async_trait]
-impl DetectionStore for UnusedStore {
-    async fn load_detection_config(
-        &self,
-    ) -> AdminStoreResult<Option<gateway_admin::model::detection::DetectionConfig>> {
-        Err(unavailable("detection config"))
-    }
-
-    async fn replace_detection_config(
-        &self,
-        _: gateway_admin::model::detection::ReplaceDetectionConfig,
-        _: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::detection::DetectionConfigMutation> {
-        Err(unavailable("detection config"))
-    }
-
-    async fn list_detection_records(
-        &self,
-        _: gateway_admin::model::detection::DetectionRecordQuery,
-    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionRecord>> {
-        Err(unavailable("detection records"))
-    }
-
-    async fn list_detection_rounds(
-        &self,
-        _: u32,
-    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionRound>> {
-        Err(unavailable("detection rounds"))
-    }
-
-    async fn latest_detection_checked_at(
-        &self,
-    ) -> AdminStoreResult<Option<chrono::DateTime<chrono::Utc>>> {
-        Err(unavailable("latest detection timestamp"))
-    }
-
-    async fn list_detection_targets(
-        &self,
-        _: &gateway_admin::model::detection::DetectionAccountScope,
-    ) -> AdminStoreResult<Vec<gateway_admin::model::detection::DetectionTarget>> {
-        Err(unavailable("detection targets"))
-    }
-
-    async fn insert_detection_record(
-        &self,
-        _: gateway_admin::model::detection::NewDetectionRecord,
-    ) -> AdminStoreResult<()> {
-        Err(unavailable("detection records"))
-    }
-
-    async fn load_detection_record_html(&self, _: i64) -> AdminStoreResult<Option<String>> {
-        Err(unavailable("detection record html"))
-    }
-}
-
-#[async_trait]
 impl AccountRuntimeStore for UnusedStore {
     async fn active_rate_limits(&self) -> AdminStoreResult<AccountRuntimeSnapshot> {
         Ok(AccountRuntimeSnapshot {
@@ -1027,15 +970,6 @@ impl ProviderAdmin for UnusedProvider {
     fn connection_test_operation(
         &self,
         _: &gateway_core::routing::UpstreamModelId,
-        _: &str,
-    ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
-        Err(unsupported_provider())
-    }
-
-    fn intelligence_detection_operation(
-        &self,
-        _: &gateway_core::routing::UpstreamModelId,
-        _: &str,
         _: &str,
     ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
         Err(unsupported_provider())

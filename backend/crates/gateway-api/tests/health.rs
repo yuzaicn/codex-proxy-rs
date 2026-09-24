@@ -42,7 +42,6 @@ async fn healthz_should_ignore_non_critical_worker_failures() {
         [
             WorkerKind::OAuthRefresh,
             WorkerKind::QuotaCatalogHealth,
-            WorkerKind::IntelligenceDetection,
             WorkerKind::ResetDetection,
         ]
         .into_iter()

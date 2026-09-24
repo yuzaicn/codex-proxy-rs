@@ -38,11 +38,6 @@ use gateway_admin::{
             ClientKeyListQuery, ClientKeyPage, ClientKeyRecord, ClientKeySecret, DeleteClientKey,
             NewClientKey, SetClientKeyEnabled, UpdateClientKey,
         },
-        detection::{
-            DetectionAccountScope, DetectionConfig, DetectionConfigMutation, DetectionRecord,
-            DetectionRecordQuery, DetectionRound, DetectionTarget, NewDetectionRecord,
-            ReplaceDetectionConfig,
-        },
         observability::{
             DashboardDesktopRelease, DashboardObservation, DashboardWireAttribute,
             DashboardWireProfile, DashboardWireTarget, DesktopReleaseStatus, DiagnosticDimension,
@@ -67,7 +62,7 @@ use gateway_admin::{
         store::{
             AccountGroupStore, AccountRuntimeStore, AccountStore, AdminAccountStorePorts,
             AdminStoreError, AdminStoreErrorKind, AdminStorePorts, AdminStoreResult, AuthStore,
-            ClientKeyStore, DetectionStore, ObservabilityStore, SettingsStore,
+            ClientKeyStore, ObservabilityStore, SettingsStore,
         },
         system::{
             SystemOperationError, SystemOperationErrorKind, SystemOperations,
@@ -218,7 +213,6 @@ impl AdminHarness {
                 self.client_keys,
                 self.observability,
                 self.settings,
-                Arc::new(UnavailableStore),
                 self.backup,
             ),
             self.providers,
@@ -625,53 +619,6 @@ impl SettingsStore for UnavailableStore {
     }
 }
 
-#[async_trait]
-impl DetectionStore for UnavailableStore {
-    async fn load_detection_config(&self) -> AdminStoreResult<Option<DetectionConfig>> {
-        Err(unavailable("detection config"))
-    }
-
-    async fn replace_detection_config(
-        &self,
-        _: ReplaceDetectionConfig,
-        _: &MutationContext,
-    ) -> AdminStoreResult<DetectionConfigMutation> {
-        Err(unavailable("detection config"))
-    }
-
-    async fn list_detection_records(
-        &self,
-        _: DetectionRecordQuery,
-    ) -> AdminStoreResult<Vec<DetectionRecord>> {
-        Err(unavailable("detection records"))
-    }
-
-    async fn list_detection_rounds(&self, _: u32) -> AdminStoreResult<Vec<DetectionRound>> {
-        Err(unavailable("detection rounds"))
-    }
-
-    async fn latest_detection_checked_at(
-        &self,
-    ) -> AdminStoreResult<Option<chrono::DateTime<chrono::Utc>>> {
-        Err(unavailable("latest detection timestamp"))
-    }
-
-    async fn list_detection_targets(
-        &self,
-        _: &DetectionAccountScope,
-    ) -> AdminStoreResult<Vec<DetectionTarget>> {
-        Err(unavailable("detection targets"))
-    }
-
-    async fn insert_detection_record(&self, _: NewDetectionRecord) -> AdminStoreResult<()> {
-        Err(unavailable("detection records"))
-    }
-
-    async fn load_detection_record_html(&self, _: i64) -> AdminStoreResult<Option<String>> {
-        Err(unavailable("detection record html"))
-    }
-}
-
 struct UnavailableProvider {
     kind: ProviderKind,
     dashboard_profile: Option<DashboardWireProfile>,
@@ -699,15 +646,6 @@ impl ProviderAdmin for UnavailableProvider {
     fn connection_test_operation(
         &self,
         _: &gateway_core::routing::UpstreamModelId,
-        _: &str,
-    ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
-        Err(unsupported_provider())
-    }
-
-    fn intelligence_detection_operation(
-        &self,
-        _: &gateway_core::routing::UpstreamModelId,
-        _: &str,
         _: &str,
     ) -> Result<gateway_core::operation::Operation, ProviderAdminError> {
         Err(unsupported_provider())
