@@ -1546,6 +1546,218 @@ async fn admin_import_updates_the_same_verified_identity_without_rebinding_or_re
 }
 
 #[tokio::test]
+async fn admin_import_updates_the_same_unverified_identity_without_creating_duplicates() {
+    let Some(database) = TestDatabase::create("provider_account_admin_unverified_upsert").await
+    else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    let scope = ProviderAccountAdminScope {
+        provider_kind: "openai".to_owned(),
+    };
+    let mut first = account("acct_admin_unverified_first", "unused-user");
+    first.upstream_user_id = None;
+    first.upstream_account_id = None;
+    repository
+        .import_provider_accounts(ImportProviderAccounts {
+            settings: None,
+            outbound_proxy: None,
+            scope: scope.clone(),
+            accounts: vec![first],
+            audit: audit(
+                "audit_admin_unverified_create",
+                "import",
+                "acct_admin_unverified_first",
+            ),
+        })
+        .await
+        .expect("create unverified imported account");
+
+    let mut second = account("acct_admin_unverified_second", "unused-user");
+    second.upstream_user_id = None;
+    second.upstream_account_id = None;
+    second.provider_credentials_json = credential_json("unverified-reimport-secret");
+    let imported = repository
+        .import_provider_accounts(ImportProviderAccounts {
+            settings: None,
+            outbound_proxy: None,
+            scope,
+            accounts: vec![second],
+            audit: audit(
+                "audit_admin_unverified_update",
+                "import",
+                "acct_admin_unverified_first",
+            ),
+        })
+        .await
+        .expect("update unverified imported identity");
+
+    assert_eq!(imported.account_ids, ["acct_admin_unverified_first"]);
+    assert_eq!(imported.created_count, 0);
+    assert_eq!(imported.updated_count, 1);
+    let count: i64 = sqlx::query_scalar(
+        "select count(*) from provider_accounts
+         where provider_kind = 'openai'
+           and upstream_user_id is null
+           and upstream_account_id is null",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("count unverified imported identities");
+    assert_eq!(count, 1);
+
+    database.close().await;
+}
+
+#[tokio::test]
+async fn identity_migration_deduplicates_accounts_and_rebinds_references() {
+    let Some(database) = TestDatabase::create("provider_account_identity_migration").await else {
+        return;
+    };
+    sqlx::raw_sql(
+        "drop index provider_accounts_upstream_identity_uq;
+         create unique index provider_accounts_upstream_identity_uq
+           on provider_accounts (
+             provider_kind,
+             upstream_user_id,
+             coalesce(upstream_account_id, '')
+           );",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("restore pre-migration identity index");
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    for id in ["acct_identity_older", "acct_identity_newer"] {
+        let mut duplicate = account(id, "unused-user");
+        duplicate.upstream_user_id = None;
+        duplicate.upstream_account_id = None;
+        repository
+            .insert_provider_account(duplicate)
+            .await
+            .expect("seed duplicate identity");
+    }
+    sqlx::query(
+        "update provider_accounts
+         set created_at = case id
+               when 'acct_identity_older' then timestamp with time zone '2026-01-01 00:00:00Z'
+               else timestamp with time zone '2026-01-02 00:00:00Z'
+             end,
+             credential_observed_at = case id
+               when 'acct_identity_older' then timestamp with time zone '2026-01-01 00:00:00Z'
+               else timestamp with time zone '2026-01-02 00:00:00Z'
+             end,
+             updated_at = timestamp with time zone '2026-01-03 00:00:00Z'",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("set deterministic survivor order");
+    sqlx::raw_sql(
+        "insert into account_groups (id, name, description, color, enabled, created_at, updated_at)
+           values ('grp_00000000000000000000000000000350', 'Identity migration', null,
+             '#2563EBFF', true, now(), now());
+         insert into account_group_accounts (account_group_id, provider_account_id, created_at)
+           values
+             ('grp_00000000000000000000000000000350', 'acct_identity_older', now()),
+             ('grp_00000000000000000000000000000350', 'acct_identity_newer', now());
+         insert into model_requests (
+           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           client_transport, provider_account_id, provider_account_ref,
+           started_at, deadline_at, outcome, completed_at, routing_scope
+         ) values (
+           'req_identity_migration', 'deleted_key', 1, 'openai', 'responses', '/v1/responses',
+           'http_sse', 'acct_identity_older', 'acct_identity_older',
+           now(), now() + interval '1 hour', 'failed', now(), 'all'
+         );
+         insert into ops_events (
+           id, level, component, operation, provider_account_id, provider_account_ref,
+           failure_kind, message, created_at
+         ) values (
+           'ops_identity_migration', 'error', 'probe', 'probe',
+           'acct_identity_older', 'acct_identity_older', 'timeout', 'test', now()
+         );
+         insert into intelligence_detection_records (
+           detection_round_id, account_id, checked_at, degraded
+         ) values (
+           '00000000-0000-0000-0000-000000000350', 'acct_identity_older', now(), false
+         );",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("seed references to duplicate accounts");
+
+    let mut transaction = database.pool.begin().await.expect("begin migration");
+    sqlx::raw_sql(include_str!(
+        "../../../../../migrations/0012_provider_accounts_identity_nulls_not_distinct.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .expect("apply identity deduplication migration");
+    transaction.commit().await.expect("commit migration");
+
+    let account_ids = sqlx::query_scalar::<_, String>(
+        "select id from provider_accounts
+         where provider_kind = 'openai' and upstream_user_id is null
+           and upstream_account_id is null
+         order by id",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .expect("load deduplicated identity");
+    assert_eq!(account_ids, ["acct_identity_newer"]);
+    let memberships: i64 = sqlx::query_scalar(
+        "select count(*) from account_group_accounts
+         where account_group_id = 'grp_00000000000000000000000000000350'
+           and provider_account_id = 'acct_identity_newer'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("count merged group memberships");
+    assert_eq!(memberships, 1);
+    for table in ["model_requests", "ops_events"] {
+        let reference = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(format!(
+            "select provider_account_id, provider_account_ref from {table} limit 1"
+        )))
+        .fetch_one(&database.pool)
+        .await
+        .expect("load rebound account reference");
+        assert_eq!(
+            reference,
+            (
+                "acct_identity_newer".to_owned(),
+                "acct_identity_newer".to_owned()
+            )
+        );
+    }
+    let detection_account: String = sqlx::query_scalar(
+        "select account_id from intelligence_detection_records
+         where detection_round_id = '00000000-0000-0000-0000-000000000350'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("load rebound detection reference");
+    assert_eq!(detection_account, "acct_identity_newer");
+    let duplicate_error = sqlx::query(
+        "insert into provider_accounts (
+           id, provider_kind, name, authentication_kind, provider_credentials_json,
+           has_refresh_token, credential_observed_at, created_at, updated_at
+         ) values (
+           'acct_identity_rejected', 'openai', 'duplicate', 'oauth', '{}',
+           false, now(), now(), now()
+         )",
+    )
+    .execute(&database.pool)
+    .await
+    .expect_err("NULL identity must be unique after migration");
+    assert!(
+        duplicate_error
+            .as_database_error()
+            .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+    );
+
+    database.close().await;
+}
+
+#[tokio::test]
 async fn admin_import_mixed_batch_counts_created_and_updated_in_submission_order() {
     let Some(database) = TestDatabase::create("provider_account_admin_mixed_upsert").await else {
         return;
