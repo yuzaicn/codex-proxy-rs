@@ -219,12 +219,13 @@ async fn proxy_accounts_paginate_thousands_of_accounts_and_search_without_loadin
     // 相同名称验证稳定排序；账号仅写入隔离测试数据库，不接触真实账号池。
     sqlx::query(
         "insert into provider_accounts
-        (id, provider_kind, name, email, authentication_kind, provider_credentials_json,
+        (id, provider_kind, name, email, upstream_user_id, authentication_kind, provider_credentials_json,
          has_refresh_token, enabled, credential_observed_at, created_at, updated_at,
          outbound_proxy_id, outbound_proxy_url)
         select 'acct_page_' || lpad(n::text, 4, '0'),
             case when n % 2 = 0 then 'xai' else 'openai' end, '共享账号',
-            'page_' || lpad(n::text, 4, '0') || '@example.invalid', 'oauth',
+            'page_' || lpad(n::text, 4, '0') || '@example.invalid',
+            'user-page-' || lpad(n::text, 4, '0'), 'oauth',
             '{\"access_token\":\"page-test-secret\"}'::jsonb, false, n % 2 = 0,
             now(), now(), now(), $1, $2
         from generate_series(1, 1005) as n",

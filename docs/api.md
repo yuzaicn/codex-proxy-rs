@@ -356,6 +356,7 @@ concurrent proxy mutations return 409. OAuth commits still reject a deleted, cha
 - xAI 批量导入逐条独立校验：失败条目跳过并记录日志，不中断其余条目，仅当没有任何条目成功时整个导入才报错；
 - xAI API Key 不是受支持的账号 credential；
 - 导入不会只凭文件外形写入账号；目标 Provider 使用认证材料完成必要的 token exchange 或已认证账号资料补全。
+- 当导入凭据无法解析出 `upstream_user_id` 和 `upstream_account_id` 时，该 Provider 仅保留一个无身份占位账号；后续同类 opaque token 导入更新该账号而不会新增行。这个规则会合并不同 opaque token 的无身份账号，且返回 `updatedCount=1`；如需区分它们，凭据必须先补齐可识别的上游身份。
 
 管理端的 OpenAI `AT` / `RT` 标签是同一导入 API 的输入便利层：每行一个 token，最多 200 行，提交前
 转换为对应的 `accounts` JSON。Admin API 本身不接收纯文本 token 列表。例如：
