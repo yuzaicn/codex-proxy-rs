@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
+import type { MixedImportFailureGroup, TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
 import type { AccountRow } from '../../constants'
 import type { AccountCreateForm, AccountImportMode } from './model'
 import type { AccountGroup } from '@/api'
@@ -25,9 +25,21 @@ const props = withDefaults(defineProps<{
   account?: AccountRow | null
   tokenRows?: TokenImportRow[]
   tokenImportNotice?: string
-}>(), { saving: false, oauthLoading: false, reauthorizing: false, account: null, tokenImportNotice: '' })
+  mixedImportFailureGroups?: MixedImportFailureGroup[]
+  mixedImportImportedCount?: number
+  mixedImportRetryAvailable?: boolean
+}>(), {
+  saving: false,
+  oauthLoading: false,
+  reauthorizing: false,
+  account: null,
+  tokenImportNotice: '',
+  mixedImportFailureGroups: () => [],
+  mixedImportImportedCount: 0,
+  mixedImportRetryAvailable: false,
+})
 
-const emit = defineEmits<{ create: [], generateOauth: [], appendText: [text: string], retryRow: [id: string], retryFailed: [], copyFailed: [], setRowKind: [payload: { id: string, kind: TokenImportKind }], removeRow: [id: string], setUnknownKind: [kind: TokenImportKind] }>()
+const emit = defineEmits<{ create: [], generateOauth: [], appendText: [text: string], retryRow: [id: string], retryFailed: [], retryMixed: [], copyFailed: [], setRowKind: [payload: { id: string, kind: TokenImportKind }], removeRow: [id: string], setUnknownKind: [kind: TokenImportKind] }>()
 const open = defineModel<boolean>({ default: false })
 const form = defineModel<AccountCreateForm>('form', { required: true })
 const busy = computed(() => props.saving || props.oauthLoading)
@@ -122,9 +134,13 @@ function continueToImport() {
           :disabled="busy"
           :rows="mode === 'auto' ? (props.tokenRows || []) : undefined"
           :notice="mode === 'auto' ? props.tokenImportNotice : undefined"
+          :mixed-failure-groups="view.isBatch ? props.mixedImportFailureGroups : undefined"
+          :mixed-imported-count="view.isBatch ? props.mixedImportImportedCount : 0"
+          :mixed-retry-available="view.isBatch && props.mixedImportRetryAvailable"
           @append-text="emit('appendText', $event)"
           @retry-row="emit('retryRow', $event)"
           @retry-failed="emit('retryFailed')"
+          @retry-mixed="emit('retryMixed')"
           @copy-failed="emit('copyFailed')"
           @set-row-kind="emit('setRowKind', $event)"
           @remove-row="emit('removeRow', $event)"

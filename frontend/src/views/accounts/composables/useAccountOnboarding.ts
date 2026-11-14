@@ -22,6 +22,27 @@ interface MixedImportDocument {
   document: Record<string, unknown>
 }
 
+interface MixedImportFailure {
+  provider: ImportProvider
+  scope: 'account' | 'document'
+  message: string
+  retryable: boolean
+}
+
+interface MixedImportAttempt {
+  importedCount: number
+  failures: MixedImportFailure[]
+  retryDocuments: MixedImportDocument[]
+}
+
+export interface MixedImportFailureGroup {
+  providerLabel: string
+  scope: 'account' | 'document'
+  message: string
+  retryable: boolean
+  count: number
+}
+
 type OpenAiTokenImportMode = 'access_token' | 'refresh_token'
 
 const MAX_TOKEN_IMPORT_COUNT = 200
@@ -76,7 +97,18 @@ export function useAccountOnboarding(options: {
   const createForm = ref(emptyAccountCreateForm())
   const tokenRows = ref<TokenImportRow[]>([])
   const tokenImportNotice = ref('')
+  const mixedImportImportedCount = ref(0)
+  const mixedImportFailures = ref<MixedImportFailure[]>([])
+  const mixedImportRetryDocuments = ref<MixedImportDocument[]>([])
+  const mixedImportFailureGroups = computed(() => groupMixedImportFailures(mixedImportFailures.value))
+  const mixedImportRetryAvailable = computed(() => mixedImportRetryDocuments.value.length > 0)
   let tokenRowSequence = 0
+
+  function clearMixedImportState() {
+    mixedImportImportedCount.value = 0
+    mixedImportFailures.value = []
+    mixedImportRetryDocuments.value = []
+  }
 
   const showCreateModal = computed({
     get: () => createModalOpen.value,
@@ -87,6 +119,7 @@ export function useAccountOnboarding(options: {
         createForm.value = emptyAccountCreateForm()
         tokenRows.value = []
         tokenImportNotice.value = ''
+        clearMixedImportState()
         tokenRowSequence = 0
       }
     },
@@ -119,9 +152,11 @@ export function useAccountOnboarding(options: {
         const proxyError = accountProxyError(createForm.value)
         if (proxyError)
           throw new Error(proxyError)
-        const message = createForm.value.provider === 'batch'
-          ? await importMixedAccountDocument()
-          : await importAccountDocument()
+        if (createForm.value.provider === 'batch') {
+          await importMixedAccountDocument()
+          return
+        }
+        const message = await importAccountDocument()
         await finishCreate(message)
       },
       { errorText: '导入失败' },
@@ -201,6 +236,7 @@ export function useAccountOnboarding(options: {
     createForm.value = emptyAccountCreateForm()
     tokenRows.value = []
     tokenImportNotice.value = ''
+    clearMixedImportState()
     tokenRowSequence = 0
     showCreateModal.value = true
   }
@@ -436,8 +472,55 @@ export function useAccountOnboarding(options: {
 
   async function importMixedAccountDocument() {
     const documents = parseMixedImportDocuments(parseImportJson(createForm.value.importTexts.json))
+    clearMixedImportState()
+    const attempt = await runMixedImportDocuments(documents)
+    mixedImportImportedCount.value = attempt.importedCount
+    mixedImportFailures.value = attempt.failures
+    mixedImportRetryDocuments.value = attempt.retryDocuments
+
+    if (attempt.failures.length > 0) {
+      if (attempt.importedCount > 0)
+        await options.reload()
+      notifyMixedImportFailures()
+      return
+    }
+    if (attempt.importedCount === 0)
+      throw new Error('批量文件没有可导入的账号')
+    await finishCreate(`已导入 ${attempt.importedCount} 个账号`)
+  }
+
+  async function retryMixedImports() {
+    if (creatingAccount.value || mixedImportRetryDocuments.value.length === 0)
+      return
+
+    await creatingAccountAction.run(async () => {
+      const attempt = await runMixedImportDocuments(mixedImportRetryDocuments.value)
+      if (attempt.importedCount === 0 && attempt.failures.length === 0)
+        throw new Error('重试未导入任何账号')
+      mixedImportImportedCount.value += attempt.importedCount
+      mixedImportFailures.value = [
+        ...mixedImportFailures.value.filter(failure => !failure.retryable),
+        ...attempt.failures,
+      ]
+      mixedImportRetryDocuments.value = attempt.retryDocuments
+
+      if (attempt.importedCount > 0)
+        await options.reload()
+      if (mixedImportFailures.value.length > 0) {
+        notifyMixedImportFailures()
+        return
+      }
+
+      const importedCount = mixedImportImportedCount.value
+      showCreateModal.value = false
+      toast.success(`已导入 ${importedCount} 个账号`)
+    }, { errorText: '重试失败项失败' })
+  }
+
+  async function runMixedImportDocuments(documents: MixedImportDocument[]): Promise<MixedImportAttempt> {
     let importedCount = 0
-    const failures: string[] = []
+    const failures: MixedImportFailure[] = []
+    const retryDocuments: MixedImportDocument[] = []
 
     for (const entry of documents) {
       try {
@@ -448,21 +531,47 @@ export function useAccountOnboarding(options: {
           data: entry.document,
         })
         importedCount += result.importedCount
+        const responseFailures = result.failures || []
+        const retryIndexes = responseFailures
+          .filter(failure => failure.retryable && isMixedImportAccountIndex(entry, failure.index))
+          .map(failure => failure.index)
+        for (const failure of responseFailures) {
+          failures.push({
+            provider: entry.provider,
+            scope: 'account',
+            message: failure.message || '导入失败',
+            retryable: failure.retryable && retryIndexes.includes(failure.index),
+          })
+        }
+        const retryDocument = mixedImportRetryDocument(entry, retryIndexes)
+        if (retryDocument)
+          retryDocuments.push(retryDocument)
       }
       catch (error) {
-        const message = errorMessage(error, '导入失败')
-        failures.push(`${formatProviderLabel(entry.provider, 'OpenAI')}：${message}`)
+        const retryable = isRetryableImportError(error)
+        failures.push({
+          provider: entry.provider,
+          scope: 'document',
+          message: errorMessage(error, '导入失败'),
+          retryable,
+        })
+        if (retryable)
+          retryDocuments.push(entry)
       }
     }
 
-    if (importedCount === 0) {
-      throw new Error(failures.length > 0 ? `批量导入失败：${failures.join('、')}` : '批量文件没有可导入的账号')
-    }
+    return { importedCount, failures, retryDocuments }
+  }
 
-    if (failures.length > 0) {
-      return `已导入 ${importedCount} 个账号，${failures.length} 个文档失败：${failures.join('、')}`
-    }
-    return `已导入 ${importedCount} 个账号`
+  function notifyMixedImportFailures() {
+    const message = mixedImportFailureMessage(
+      mixedImportImportedCount.value,
+      mixedImportFailureGroups.value,
+    )
+    if (mixedImportImportedCount.value > 0)
+      toast.warning(message)
+    else
+      toast.error(message)
   }
 
   async function finishCreate(message: string) {
@@ -487,6 +596,7 @@ export function useAccountOnboarding(options: {
     () => {
       tokenRows.value = []
       tokenImportNotice.value = ''
+      clearMixedImportState()
       tokenRowSequence = 0
       createForm.value = {
         ...createForm.value,
@@ -513,6 +623,12 @@ export function useAccountOnboarding(options: {
   )
 
   watch(
+    () => createForm.value.provider === 'batch' ? createForm.value.importTexts.json : '',
+    () => clearMixedImportState(),
+    { flush: 'sync' },
+  )
+
+  watch(
     [
       () => createForm.value.proxyMode,
       () => createForm.value.proxyMode === 'proxy' ? createForm.value.proxyId.trim() : '',
@@ -533,6 +649,9 @@ export function useAccountOnboarding(options: {
     createForm,
     tokenRows,
     tokenImportNotice,
+    mixedImportImportedCount,
+    mixedImportFailureGroups,
+    mixedImportRetryAvailable,
     appendTokenText,
     handleCreate,
     handleAuthorizeOAuth,
@@ -540,6 +659,7 @@ export function useAccountOnboarding(options: {
     openReauthorizeAccount,
     retryImportRow,
     retryFailedImports,
+    retryMixedImports,
     copyFailedImports,
     setTokenRowKind: (id: string, kind: TokenImportKind) => {
       const row = tokenRows.value.find(item => item.id === id)
@@ -569,6 +689,73 @@ function importFailureMessage(error: unknown) {
   if (isAmbiguousImportError(error))
     return '上游执行结果未知，账号可能已导入；重试是安全的（同账号会更新，不会重复创建）'
   return errorMessage(error, '导入失败')
+}
+
+function isMixedImportAccountIndex(entry: MixedImportDocument, index: number) {
+  return Number.isInteger(index)
+    && index >= 0
+    && Array.isArray(entry.document.accounts)
+    && index < entry.document.accounts.length
+}
+
+function mixedImportRetryDocument(entry: MixedImportDocument, indexes: number[]) {
+  const accounts = entry.document.accounts
+  if (!Array.isArray(accounts))
+    return null
+  const retryAccounts = [...new Set(indexes)]
+    .map(index => accounts[index])
+    .filter(account => account !== undefined)
+  if (retryAccounts.length === 0)
+    return null
+  return {
+    provider: entry.provider,
+    document: {
+      ...entry.document,
+      accounts: retryAccounts,
+    },
+  }
+}
+
+function groupMixedImportFailures(failures: MixedImportFailure[]): MixedImportFailureGroup[] {
+  const groups = new Map<string, MixedImportFailureGroup>()
+  for (const failure of failures) {
+    const providerLabel = formatProviderLabel(failure.provider, 'OpenAI')
+    const key = [failure.provider, failure.scope, failure.retryable, failure.message].join('\u0000')
+    const existing = groups.get(key)
+    if (existing) {
+      existing.count += 1
+      continue
+    }
+    groups.set(key, {
+      providerLabel,
+      scope: failure.scope,
+      message: failure.message,
+      retryable: failure.retryable,
+      count: 1,
+    })
+  }
+  return [...groups.values()]
+}
+
+function mixedImportFailureMessage(importedCount: number, groups: MixedImportFailureGroup[]) {
+  const accountFailures = groups
+    .filter(group => group.scope === 'account')
+    .reduce((total, group) => total + group.count, 0)
+  const documentFailures = groups
+    .filter(group => group.scope === 'document')
+    .reduce((total, group) => total + group.count, 0)
+  const counts = [
+    accountFailures > 0 ? `${accountFailures} 个账号失败` : '',
+    documentFailures > 0 ? `${documentFailures} 个文档失败` : '',
+  ].filter(Boolean).join('，')
+  const summary = importedCount > 0
+    ? `已导入 ${importedCount} 个账号，${counts}`
+    : `批量导入失败：${counts}`
+  const reasons = groups.map((group) => {
+    const unit = group.scope === 'account' ? '个账号' : '个文档'
+    return `${group.providerLabel}：${group.message}（${group.count} ${unit}${group.retryable ? '，可重试' : '，需处理'}）`
+  })
+  return reasons.length > 0 ? `${summary}：${reasons.join('；')}` : summary
 }
 
 function importResponseFailure(result: { failures?: Array<{ code: string, retryable: boolean, message: string }> }) {

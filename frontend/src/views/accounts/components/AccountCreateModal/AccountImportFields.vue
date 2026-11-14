@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
+import type { MixedImportFailureGroup, TokenImportKind, TokenImportRow } from '../../composables/useAccountOnboarding'
 import { Copy, RefreshCw, Trash2, Upload } from '@lucide/vue'
 import { useFileDialog } from '@vueuse/core'
 import { computed, onScopeDispose, ref } from 'vue'
@@ -16,11 +16,22 @@ const props = withDefaults(defineProps<{
   autoMode?: boolean
   rows?: TokenImportRow[]
   notice?: string
-}>(), { autoMode: false, rows: undefined, notice: '' })
+  mixedFailureGroups?: MixedImportFailureGroup[]
+  mixedImportedCount?: number
+  mixedRetryAvailable?: boolean
+}>(), {
+  autoMode: false,
+  rows: undefined,
+  notice: '',
+  mixedFailureGroups: () => [],
+  mixedImportedCount: 0,
+  mixedRetryAvailable: false,
+})
 const emit = defineEmits<{
   appendText: [text: string]
   retryRow: [id: string]
   retryFailed: []
+  retryMixed: []
   copyFailed: []
   setRowKind: [payload: { id: string, kind: TokenImportKind }]
   removeRow: [id: string]
@@ -29,6 +40,18 @@ const emit = defineEmits<{
 const text = defineModel<string>({ required: true })
 const draftText = ref('')
 const summary = computed(() => props.rows ? tokenImportSummary(props.rows) : undefined)
+const mixedFailureCountText = computed(() => {
+  const accountCount = props.mixedFailureGroups
+    .filter(group => group.scope === 'account')
+    .reduce((total, group) => total + group.count, 0)
+  const documentCount = props.mixedFailureGroups
+    .filter(group => group.scope === 'document')
+    .reduce((total, group) => total + group.count, 0)
+  return [
+    accountCount > 0 ? `${accountCount} 个账号失败` : '',
+    documentCount > 0 ? `${documentCount} 个文档失败` : '',
+  ].filter(Boolean).join('，')
+})
 const fileError = ref('')
 const { open: openFile, onChange } = useFileDialog({ accept: 'application/json,.json', multiple: false, reset: true })
 
@@ -116,6 +139,42 @@ function updateKind(row: TokenImportRow, event: Event) {
     <p v-if="notice" class="mt-1.5 text-xs text-cp-error" role="alert">
       {{ notice }}
     </p>
+    <section
+      v-if="mixedFailureGroups.length > 0"
+      class="mt-3 rounded-cp px-3.5 py-3 text-sm"
+      :class="mixedImportedCount > 0 ? 'bg-cp-warning-container text-cp-warning-on-container' : 'bg-cp-error-container text-cp-error-on-container'"
+      :role="mixedImportedCount > 0 ? 'status' : 'alert'"
+      aria-live="polite"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-2">
+        <div class="min-w-0">
+          <p class="m-0 font-semibold">
+            {{ mixedImportedCount > 0 ? `已导入 ${mixedImportedCount} 个账号，${mixedFailureCountText}` : `批量导入失败：${mixedFailureCountText}` }}
+          </p>
+          <p class="mt-1 mb-0 text-xs">
+            {{ mixedRetryAvailable ? '重试只会提交失败账号，已成功账号不会重复提交。' : '请按失败原因处理后重新导入。' }}
+          </p>
+        </div>
+        <BaseButton v-if="mixedRetryAvailable" size="sm" variant="secondary" :disabled="disabled" @click="emit('retryMixed')">
+          <template #icon>
+            <RefreshCw class="size-3.5" aria-hidden="true" />
+          </template>
+          重试失败项
+        </BaseButton>
+      </div>
+      <ul class="mt-2 mb-0 grid list-none gap-1.5 p-0">
+        <li
+          v-for="(group, index) in mixedFailureGroups"
+          :key="`${group.providerLabel}-${group.scope}-${group.message}-${index}`"
+          class="flex flex-wrap items-start justify-between gap-x-3 gap-y-0.5 text-xs"
+        >
+          <span class="min-w-0 wrap-break-word">{{ group.providerLabel }}：{{ group.message }}</span>
+          <span class="shrink-0 font-medium">
+            {{ group.count }} 个{{ group.scope === 'account' ? '账号' : '文档' }} · {{ group.retryable ? '可重试' : '需处理' }}
+          </span>
+        </li>
+      </ul>
+    </section>
     <template v-if="rows">
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-cp-border bg-cp-bg-muted px-3 py-2 text-xs text-cp-text-secondary">
         <span v-if="summary">
