@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/error'
 import { parseOpenAiTokenRows, tokenImportSummary, useAccountOnboarding } from '../useAccountOnboarding'
 
-const { importAccountsMock, toastSuccessMock } = vi.hoisted(() => ({
+const { importAccountsMock, toastErrorMock, toastSuccessMock, toastWarningMock } = vi.hoisted(() => ({
   importAccountsMock: vi.fn(),
+  toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
+  toastWarningMock: vi.fn(),
 }))
 
 vi.mock('@/api', () => ({
@@ -15,7 +17,7 @@ vi.mock('@/api', () => ({
 
 // BaseToast 的入口会加载 SFC，node 环境必须整体替换。
 vi.mock('@/components/base/BaseToast', () => ({
-  toast: { success: toastSuccessMock, error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  toast: { success: toastSuccessMock, error: toastErrorMock, warning: toastWarningMock, info: vi.fn() },
 }))
 
 const RISKY_COPY = '上游执行结果未知，该账号可能已导入。请先刷新账号列表确认，未导入再重试；反复重试可能使该 Refresh Token 永久失效'
@@ -35,6 +37,19 @@ function setup(
   onboarding.createForm.value.provider = 'openai'
   onboarding.createForm.value.mode = 'auto'
   onboarding.appendTokenText(tokens)
+  return onboarding
+}
+
+function setupBatch(
+  document: unknown,
+  options: { reload?: () => Promise<unknown> } = {},
+) {
+  const onboarding = useAccountOnboarding({
+    reload: options.reload || vi.fn(async () => {}),
+  })
+  onboarding.openCreateAccount()
+  onboarding.createForm.value.provider = 'batch'
+  onboarding.createForm.value.importTexts.json = JSON.stringify(document)
   return onboarding
 }
 
@@ -420,6 +435,122 @@ describe('逐行导入结果与汇总', () => {
       result: '',
       error: '令牌已失效',
     })
+  })
+})
+
+describe('混合 JSON 导入失败汇总', () => {
+  beforeEach(() => {
+    importAccountsMock.mockReset()
+    toastErrorMock.mockReset()
+    toastSuccessMock.mockReset()
+    toastWarningMock.mockReset()
+  })
+
+  it('部分失败时保留弹窗，显示失败数量与原因，并刷新成功账号', async () => {
+    const reload = vi.fn(async () => {})
+    importAccountsMock.mockResolvedValueOnce({
+      importedCount: 2,
+      accountIds: ['account-1', 'account-2'],
+      failures: [{ index: 2, code: 'refresh_rejected', retryable: true, message: '令牌已失效' }],
+    })
+    const onboarding = setupBatch({
+      documents: [{
+        provider: 'openai',
+        document: {
+          accounts: [
+            { refreshToken: 'rt.first' },
+            { refreshToken: 'rt.second' },
+            { refreshToken: 'rt.expired' },
+          ],
+        },
+      }],
+    }, { reload })
+
+    await onboarding.handleCreate()
+
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(onboarding.showCreateModal.value).toBe(true)
+    expect(onboarding.mixedImportImportedCount.value).toBe(2)
+    expect(onboarding.mixedImportFailureGroups.value).toEqual([{
+      providerLabel: 'OpenAI',
+      scope: 'account',
+      message: '令牌已失效',
+      retryable: true,
+      count: 1,
+    }])
+    expect(onboarding.mixedImportRetryAvailable.value).toBe(true)
+    expect(toastWarningMock).toHaveBeenCalledWith(
+      '已导入 2 个账号，1 个账号失败：OpenAI：令牌已失效（1 个账号，可重试）',
+    )
+  })
+
+  it('全部失败时提示导入失败和具体原因，不误报文件没有账号', async () => {
+    importAccountsMock.mockResolvedValueOnce({
+      importedCount: 0,
+      accountIds: [],
+      failures: [
+        { index: 0, code: 'invalid_credential', retryable: false, message: 'Refresh Token 已失效' },
+        { index: 1, code: 'invalid_credential', retryable: false, message: 'Refresh Token 已失效' },
+      ],
+    })
+    const onboarding = setupBatch({
+      documents: [{
+        provider: 'openai',
+        document: {
+          accounts: [
+            { refreshToken: 'rt.expired-one' },
+            { refreshToken: 'rt.expired-two' },
+          ],
+        },
+      }],
+    })
+
+    await onboarding.handleCreate()
+
+    expect(onboarding.showCreateModal.value).toBe(true)
+    expect(onboarding.mixedImportRetryAvailable.value).toBe(false)
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      '批量导入失败：2 个账号失败：OpenAI：Refresh Token 已失效（2 个账号，需处理）',
+    )
+    expect(toastErrorMock.mock.calls.flat().join(' ')).not.toContain('没有可导入的账号')
+  })
+
+  it('重试时只提交 retryable 失败账号，保留文档中的代理信息', async () => {
+    const reload = vi.fn(async () => {})
+    importAccountsMock
+      .mockResolvedValueOnce({
+        importedCount: 1,
+        accountIds: ['account-1'],
+        failures: [{ index: 1, code: 'upstream_unavailable', retryable: true, message: '上游暂不可用' }],
+      })
+      .mockResolvedValueOnce(successResponse())
+    const onboarding = setupBatch({
+      documents: [{
+        provider: 'openai',
+        document: {
+          accounts: [
+            { refreshToken: 'rt.success', proxyKey: 'proxy-a' },
+            { refreshToken: 'rt.retry', proxyKey: 'proxy-a' },
+          ],
+          proxies: [{ proxyKey: 'proxy-a', url: 'http://proxy.test' }],
+        },
+      }],
+    }, { reload })
+
+    await onboarding.handleCreate()
+    await onboarding.retryMixedImports()
+
+    expect(importAccountsMock).toHaveBeenCalledTimes(2)
+    expect(importAccountsMock.mock.calls[1][0]).toMatchObject({
+      provider: 'openai',
+      data: {
+        accounts: [{ refreshToken: 'rt.retry', proxyKey: 'proxy-a' }],
+        proxies: [{ proxyKey: 'proxy-a', url: 'http://proxy.test' }],
+      },
+    })
+    expect(reload).toHaveBeenCalledTimes(2)
+    expect(toastSuccessMock).toHaveBeenCalledWith('已导入 2 个账号')
+    expect(onboarding.showCreateModal.value).toBe(false)
   })
 })
 

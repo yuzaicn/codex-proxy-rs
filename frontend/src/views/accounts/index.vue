@@ -98,6 +98,9 @@ const {
   createForm,
   tokenRows,
   tokenImportNotice,
+  mixedImportImportedCount,
+  mixedImportFailureGroups,
+  mixedImportRetryAvailable,
   appendTokenText,
   handleCreate,
   handleAuthorizeOAuth,
@@ -112,6 +115,7 @@ const {
   handleRefreshQuota,
   retryImportRow,
   retryFailedImports,
+  retryMixedImports,
   copyFailedImports,
   setTokenRowKind,
   removeTokenRow,
@@ -402,11 +406,15 @@ const {
       :saving="creatingAccount"
       :token-rows="tokenRows"
       :token-import-notice="tokenImportNotice"
+      :mixed-imported-count="mixedImportImportedCount"
+      :mixed-import-failure-groups="mixedImportFailureGroups"
+      :mixed-import-retry-available="mixedImportRetryAvailable"
       @create="handleCreate"
       @generate-oauth="handleAuthorizeOAuth"
       @append-text="appendTokenText"
       @retry-row="retryImportRow"
       @retry-failed="retryFailedImports"
+      @retry-mixed="retryMixedImports"
       @copy-failed="copyFailedImports"
       @set-row-kind="handleSetTokenRowKind"
       @remove-row="removeTokenRow"
