@@ -1,4 +1,5 @@
 import type { AccountGroupRef } from './account-groups'
+import { ACCOUNT_IMPORT_TIMEOUT_MS } from '../constants'
 import request from '../request'
 
 export type AccountStatus
@@ -467,6 +468,7 @@ export function importAccounts(data: AccountImportParam) {
     url: '/api/admin/accounts/import',
     method: 'POST',
     data,
+    timeout: ACCOUNT_IMPORT_TIMEOUT_MS,
   })
 }
 

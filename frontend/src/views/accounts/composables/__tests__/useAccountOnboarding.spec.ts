@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError } from '@/api/error'
+import { ApiError, normalizeApiError } from '@/api/error'
 import { parseOpenAiTokenRows, tokenImportSummary, useAccountOnboarding } from '../useAccountOnboarding'
 
 const { importAccountsMock, toastSuccessMock } = vi.hoisted(() => ({
@@ -141,6 +141,138 @@ describe('importTokenRow 自动重试判定', () => {
     const row = onboarding.tokenRows.value[0]
     expect(row.status).toBe('failed')
     expect(row.error).toBe(SAFE_CONFLICT_COPY)
+  })
+})
+
+describe('42902 限流退避与全局闸门', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    importAccountsMock.mockReset()
+    toastSuccessMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function rateLimited(retryAfterSeconds?: number) {
+    return new ApiError('上游限流，请稍后重试', 429, 42902, undefined, 'api', retryAfterSeconds)
+  }
+
+  it('按 data.retryAfterSeconds 退避：窗口内不发第 2 次请求，到期后恢复导入', async () => {
+    importAccountsMock
+      .mockRejectedValueOnce(rateLimited(2))
+      .mockResolvedValueOnce(successResponse())
+    const onboarding = setup()
+    const row = onboarding.tokenRows.value[0]
+    const action = onboarding.handleCreate()
+
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(importAccountsMock).toHaveBeenCalledTimes(2)
+    await action
+    expect(row.status).toBe('success')
+  })
+
+  it('缺省 retryAfterSeconds 时回落 5s 自有退避', async () => {
+    importAccountsMock
+      .mockRejectedValueOnce(rateLimited())
+      .mockResolvedValueOnce(successResponse())
+    const onboarding = setup()
+    const row = onboarding.tokenRows.value[0]
+    const action = onboarding.handleCreate()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(4_998)
+    expect(importAccountsMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(importAccountsMock).toHaveBeenCalledTimes(2)
+    await action
+    expect(row.status).toBe('success')
+  })
+
+  it('全局闸门：单行 42902 会暂停其余 worker，窗口内不再发出任何请求', async () => {
+    importAccountsMock.mockRejectedValue(rateLimited(2))
+    const onboarding = setup('rt.row-1\nrt.row-2\nrt.row-3\nrt.row-4\nrt.row-5\nrt.row-6')
+
+    const action = onboarding.handleCreate()
+    // 并发 4：前 4 行先发；命中限流后第 5、6 行必须等窗口结束，不得在窗口内抢跑。
+    await vi.advanceTimersByTimeAsync(1)
+    expect(importAccountsMock).toHaveBeenCalledTimes(4)
+    expect(onboarding.tokenImportNotice.value).toMatch(/上游限流，暂停导入 \d+ 秒后继续/)
+
+    await vi.advanceTimersByTimeAsync(1_998)
+    expect(importAccountsMock).toHaveBeenCalledTimes(4)
+
+    await vi.runAllTimersAsync()
+    await action
+    // 每行上限 = 首次 + 4 次限流重试 = 5 次，6 行共 30 次；说明窗口外确实全部恢复且没有失控重试。
+    expect(importAccountsMock).toHaveBeenCalledTimes(30)
+    expect(onboarding.tokenRows.value.every(row => row.status === 'failed')).toBe(true)
+    expect(onboarding.tokenImportNotice.value).toBe('')
+  })
+
+  it('三类文案区分：42902 限流 / 50301 暂不可用 / 50202 结果未知，安全承诺只给前两类', async () => {
+    importAccountsMock.mockRejectedValue(new ApiError('服务暂不可用，请稍后重试', 503, 50301, undefined, 'api'))
+    const unavailable = setup()
+    await runImport(unavailable.handleCreate())
+    expect(unavailable.tokenRows.value[0].error).toBe('上游服务暂不可用，请稍后重试；重试是安全的')
+
+    importAccountsMock.mockReset()
+    importAccountsMock.mockRejectedValue(new ApiError('上游执行结果未知', 502, 50202, undefined, 'api'))
+    const ambiguous = setup()
+    await runImport(ambiguous.handleCreate())
+    const risky = ambiguous.tokenRows.value[0].error
+    expect(risky).not.toContain('重试是安全的')
+    expect(risky).toContain('请先刷新账号列表确认')
+  })
+
+  it('重试上限后置 failed，文案体现限流且不再重试', async () => {
+    importAccountsMock.mockRejectedValue(rateLimited(0))
+    const onboarding = setup()
+    await runImport(onboarding.handleCreate())
+
+    // 首次 + 4 次限流重试；0 秒窗口不额外等待。
+    expect(importAccountsMock).toHaveBeenCalledTimes(5)
+    const row = onboarding.tokenRows.value[0]
+    expect(row.status).toBe('failed')
+    expect(row.error).toContain('上游限流')
+    expect(row.error).not.toContain('结果未知')
+  })
+
+  it('裸 HTTP 429（无 42902 码）不按限流处理，只重试到常规上限', async () => {
+    importAccountsMock.mockRejectedValue(new ApiError('请求过于频繁，请稍后重试', 429, undefined, undefined, 'http'))
+    const onboarding = setup()
+    await runImport(onboarding.handleCreate())
+
+    const row = onboarding.tokenRows.value[0]
+    expect(row.status).toBe('failed')
+    expect(row.error).not.toContain('上游限流')
+  })
+})
+
+describe('normalizeApiError 的 retryAfterSeconds 载体', () => {
+  it('从错误信封 data.retryAfterSeconds 取值并向上取整', () => {
+    const error = normalizeApiError({
+      response: { status: 429, data: { code: 42902, message: '上游限流', data: { retryAfterSeconds: 1.2 } }, headers: {} },
+    } as never)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.retryAfterSeconds).toBe(2)
+  })
+
+  it('缺省或非法值不携带 retryAfterSeconds', () => {
+    const missing = normalizeApiError({
+      response: { status: 429, data: { code: 42902, message: '上游限流', data: null }, headers: {} },
+    } as never)
+    expect(missing.retryAfterSeconds).toBeUndefined()
+
+    const invalid = normalizeApiError({
+      response: { status: 429, data: { code: 42902, message: '上游限流', data: { retryAfterSeconds: -1 } }, headers: {} },
+    } as never)
+    expect(invalid.retryAfterSeconds).toBeUndefined()
   })
 })
 
