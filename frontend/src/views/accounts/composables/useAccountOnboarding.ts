@@ -26,6 +26,11 @@ type OpenAiTokenImportMode = 'access_token' | 'refresh_token'
 
 const MAX_TOKEN_IMPORT_COUNT = 200
 export const TOKEN_IMPORT_CONCURRENCY = 4
+// 42902 契约：data.retryAfterSeconds 为权威载体；缺省回落自有退避，服务端值设上限防止单行长时间卡死。
+const RATE_LIMIT_CODE = 42902
+const RATE_LIMIT_MAX_WAIT_MS = 60_000
+const RATE_LIMIT_FALLBACK_WAIT_MS = 5_000
+const RATE_LIMIT_MAX_RETRIES = 4
 
 export type TokenImportKind = 'at' | 'rt' | 'unknown' | 'unsupported'
 export type TokenImportStatus = 'pending' | 'importing' | 'success' | 'failed' | 'needs_action' | 'duplicate'
@@ -326,23 +331,48 @@ export function useAccountOnboarding(options: {
   }
 
   async function runTokenImport(rows: TokenImportRow[]) {
-    let cursor = 0
-    async function worker() {
-      while (cursor < rows.length) {
-        const row = rows[cursor++]
-        await importTokenRow(row)
-      }
+    // 限流是端点级信号而非单行信号：任一 worker 拿到 42902，全部 worker 一起停到窗口结束。
+    let rateLimitUntil = 0
+    async function waitForRateLimitGate() {
+      const remaining = rateLimitUntil - Date.now()
+      if (remaining <= 0)
+        return
+      tokenImportNotice.value = rateLimitNotice(remaining)
+      await wait(remaining)
     }
-    await Promise.all(Array.from({ length: Math.min(TOKEN_IMPORT_CONCURRENCY, rows.length) }, () => worker()))
+    function holdRateLimitGate(retryAfterSeconds: number | undefined) {
+      const delay = Math.min(retryAfterSeconds === undefined ? RATE_LIMIT_FALLBACK_WAIT_MS : retryAfterSeconds * 1000, RATE_LIMIT_MAX_WAIT_MS)
+      rateLimitUntil = Math.max(rateLimitUntil, Date.now() + delay)
+      tokenImportNotice.value = rateLimitNotice(rateLimitUntil - Date.now())
+    }
+    try {
+      let cursor = 0
+      async function worker() {
+        while (cursor < rows.length) {
+          const row = rows[cursor++]
+          await importTokenRow(row, waitForRateLimitGate, holdRateLimitGate)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(TOKEN_IMPORT_CONCURRENCY, rows.length) }, () => worker()))
+    }
+    finally {
+      tokenImportNotice.value = ''
+    }
   }
 
-  async function importTokenRow(row: TokenImportRow) {
+  async function importTokenRow(
+    row: TokenImportRow,
+    waitForRateLimitGate: () => Promise<void>,
+    holdRateLimitGate: (retryAfterSeconds: number | undefined) => void,
+  ) {
     row.error = ''
     row.result = ''
     row.outcome = null
     row.accountId = ''
     row.retryAttempt = 0
+    let rateLimitRetries = 0
     for (let attempt = 0; attempt <= 3; attempt++) {
+      await waitForRateLimitGate()
       row.status = 'importing'
       row.retryAttempt = attempt
       try {
@@ -377,6 +407,19 @@ export function useAccountOnboarding(options: {
         return
       }
       catch (error) {
+        if (isRateLimitImportError(error)) {
+          const retryAfterSeconds = error instanceof ApiError ? error.retryAfterSeconds : undefined
+          holdRateLimitGate(retryAfterSeconds)
+          if (rateLimitRetries < RATE_LIMIT_MAX_RETRIES) {
+            rateLimitRetries++
+            await waitForRateLimitGate()
+            attempt--
+            continue
+          }
+          row.status = 'failed'
+          row.error = importFailureMessage(error)
+          return
+        }
         if (!isRetryableImportError(error) || attempt === 3) {
           row.status = isNeedsActionImportError(error) ? 'needs_action' : 'failed'
           row.error = isNeedsActionImportError(error)
@@ -566,9 +609,19 @@ export function useAccountOnboarding(options: {
 function importFailureMessage(error: unknown) {
   if (isRiskyAmbiguousImportError(error))
     return '上游执行结果未知，该账号可能已导入。请先刷新账号列表确认，未导入再重试；反复重试可能使该 Refresh Token 永久失效'
+  if (isRateLimitImportError(error)) {
+    const seconds = Math.ceil((error instanceof ApiError ? error.retryAfterSeconds : undefined) ?? RATE_LIMIT_FALLBACK_WAIT_MS / 1000)
+    return `上游限流，${seconds} 秒后自动重试；重试是安全的`
+  }
+  if (isServiceUnavailableImportError(error))
+    return '上游服务暂不可用，请稍后重试；重试是安全的'
   if (isAmbiguousImportError(error))
     return '上游执行结果未知，账号可能已导入；重试是安全的（同账号会更新，不会重复创建）'
   return errorMessage(error, '导入失败')
+}
+
+function rateLimitNotice(remainingMs: number) {
+  return `上游限流，暂停导入 ${Math.ceil(remainingMs / 1000)} 秒后继续`
 }
 
 function importResponseFailure(result: { failures?: Array<{ code: string, retryable: boolean, message: string }> }) {
@@ -614,19 +667,28 @@ function isRiskyAmbiguousImportError(error: unknown) {
   return error.code === 50202 || error.status === 0 || error.status === 408 || error.kind === 'timeout' || error.kind === 'network'
 }
 
+// 限流按业务码判定（契约：只看 code 42902，不看裸 HTTP 429）。先于风险桶判断：42902 是明确拒绝，重放安全。
+function isRateLimitImportError(error: unknown) {
+  return error instanceof ApiError && error.code === RATE_LIMIT_CODE
+}
+
+function isServiceUnavailableImportError(error: unknown) {
+  return error instanceof ApiError && error.code === 50301
+}
+
 function isAmbiguousImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
   return error.code === 40901 || isRiskyAmbiguousImportError(error)
 }
 
-// 自动重试只保留「上游明确拒绝且重放安全」的失败：(5xx 且非 50202) 或 409；风险桶一律单次即失败。
+// 自动重试只保留「上游明确拒绝且重放安全」的失败：限流、50301、(5xx 且非 50202) 或 409；风险桶一律单次即失败。
 function isRetryableImportError(error: unknown) {
   if (!(error instanceof ApiError))
     return false
   if (isRiskyAmbiguousImportError(error))
     return false
-  return error.status >= 500 || error.status === 409
+  return isRateLimitImportError(error) || error.status >= 500 || error.status === 409
 }
 
 function isNeedsActionImportError(error: unknown) {

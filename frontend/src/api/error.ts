@@ -5,6 +5,7 @@ export type ApiErrorKind = 'api' | 'timeout' | 'network' | 'http' | 'cancelled'
 interface AdminErrorEnvelope {
   code: number
   message: string
+  retryAfterSeconds?: number
 }
 
 export class ApiError extends Error {
@@ -14,6 +15,8 @@ export class ApiError extends Error {
     public readonly code?: number,
     public readonly requestId?: string,
     public readonly kind: ApiErrorKind = 'api',
+    // 42902 的权威退避载体：后端归一化的非负整数秒，缺省表示上游未给。
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -26,7 +29,7 @@ export function normalizeApiError(error: AxiosError<unknown>) {
   const envelope = adminErrorEnvelope(error.response?.data)
 
   if (envelope) {
-    return new ApiError(envelope.message, status, envelope.code, requestId, 'api')
+    return new ApiError(envelope.message, status, envelope.code, requestId, 'api', envelope.retryAfterSeconds)
   }
   if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.code === 'ERR_TIMEOUT') {
     return new ApiError('请求超时，请稍后重试', status, undefined, requestId, 'timeout')
@@ -47,7 +50,22 @@ function adminErrorEnvelope(value: unknown): AdminErrorEnvelope | null {
   if (typeof record.code !== 'number' || typeof record.message !== 'string')
     return null
   const message = record.message.trim()
-  return message ? { code: record.code, message } : null
+  if (!message)
+    return null
+  const retryAfterSeconds = retryAfterSecondsField(record.data)
+  return retryAfterSeconds === undefined
+    ? { code: record.code, message }
+    : { code: record.code, message, retryAfterSeconds }
+}
+
+// 只认 data.retryAfterSeconds（契约：非负整数秒）；`Retry-After` 头留给非浏览器客户端。
+function retryAfterSecondsField(data: unknown) {
+  if (!data || typeof data !== 'object')
+    return undefined
+  const value = (data as Record<string, unknown>).retryAfterSeconds
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.ceil(value)
+    : undefined
 }
 
 function responseHeader(
